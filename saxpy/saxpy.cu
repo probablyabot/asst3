@@ -75,6 +75,9 @@ void saxpyCuda(int N, float alpha, float* xarray, float* yarray, float* resultar
     //
     // https://devblogs.nvidia.com/easy-introduction-cuda-c-and-c/
     //
+    cudaMalloc(&device_x, N * sizeof(float));
+    cudaMalloc(&device_y, N * sizeof(float));
+    cudaMalloc(&device_result, N * sizeof(float));
         
     // start timing after allocation of device memory
     double startTime = CycleTimer::currentSeconds();
@@ -82,6 +85,8 @@ void saxpyCuda(int N, float alpha, float* xarray, float* yarray, float* resultar
     //
     // CS149 TODO: copy input arrays to the GPU using cudaMemcpy
     //
+    cudaMemcpy(device_x, xarray, N * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(device_y, yarray, N * sizeof(float), cudaMemcpyHostToDevice);
 
    
     // run CUDA kernel. (notice the <<< >>> brackets indicating a CUDA
@@ -91,7 +96,7 @@ void saxpyCuda(int N, float alpha, float* xarray, float* yarray, float* resultar
     //
     // CS149 TODO: copy result from GPU back to CPU using cudaMemcpy
     //
-
+    cudaMemcpy(resultarray, device_result, N * sizeof(float), cudaMemcpyDeviceToHost);
     cudaDeviceSynchronize();
 
     
