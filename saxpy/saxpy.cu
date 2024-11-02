@@ -92,6 +92,8 @@ void saxpyCuda(int N, float alpha, float* xarray, float* yarray, float* resultar
     // CS149 TODO: copy result from GPU back to CPU using cudaMemcpy
     //
 
+    cudaDeviceSynchronize();
+
     
     // end timing after result has been copied back into host memory
     double endTime = CycleTimer::currentSeconds();
