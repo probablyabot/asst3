@@ -27,6 +27,20 @@ static inline int nextPow2(int n) {
     return n;
 }
 
+__global__
+void upsweep_kernel(int* result, int d) {
+    int i = (blockIdx.x * blockDim.x + threadIdx.x) * 2 * d;
+    result[i+2*d-1] += result[i+d-1];
+}
+
+__global__
+void downsweep_kernel(int* result, int d) {
+    int i = (blockIdx.x * blockDim.x + threadIdx.x) * 2 * d;
+    int t = result[i+d-1];
+    result[i+d-1] = result[i+2*d-1];
+    result[i+2*d-1] += t;
+}
+
 // exclusive_scan --
 //
 // Implementation of an exclusive scan on global memory array `input`,
@@ -53,8 +67,18 @@ void exclusive_scan(int* input, int N, int* result)
     // on the CPU.  Your implementation will need to make multiple calls
     // to CUDA kernel functions (that you must write) to implement the
     // scan.
-
-
+    int threadsPerBlock = 256;
+    for (int d = 1; d <= N / 2; d *= 2) {
+        int blocks = (N / (2 * d) + threadsPerBlock - 1) / threadsPerBlock;
+        upsweep_kernel<<<blocks, threadsPerBlock>>>(result, d);
+        cudaDeviceSynchronize();  // necessary?
+    }
+    result[N-1] = 0;
+    for (int d = N / 2; d >= 1; d /= 2) {
+        int blocks = (N / (2 * d) + threadsPerBlock - 1) / threadsPerBlock;
+        downsweep_kernel<<<blocks, threadsPerBlock>>>(result, d);
+        cudaDeviceSynchronize();
+    }
 }
 
 
