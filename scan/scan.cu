@@ -217,14 +217,19 @@ int find_repeats(int* device_input, int length, int* device_output) {
     cudaMalloc(&repeats, c * sizeof(int));
     cudaMalloc(&prefix, c * sizeof(int));
     int mtpb = 1024;
-    int b = (device_input + mtpb - 1) / mtpb;
-    int tpb = min(device_input, mtpb);
+    int b = (length + mtpb - 1) / mtpb;
+    int tpb = min(length, mtpb);
     repeat_kernel<<<b, tpb>>>(device_input, repeats, length);
     cudaMemcpy(prefix, repeats, c * sizeof(int), cudaMemcpyDeviceToDevice);
-    exclusive_scan<<<b, tpb>>>(nullptr, length, prefix);
+    exclusive_scan(nullptr, length, prefix);
+    int r;
+    cudaMemcpy(&r, prefix + length - 1, sizeof(int), cudaMemcpyDeviceToHost);
     write_kernel<<<b, tpb>>>(repeats, prefix, device_output, length);
 
-    return 0; 
+    cudaFree(repeats);
+    cudaFree(prefix);
+
+    return r; 
 }
 
 
