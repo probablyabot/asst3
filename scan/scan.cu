@@ -178,6 +178,19 @@ double cudaScanThrust(int* inarray, int* end, int* resultarray) {
     return overallDuration; 
 }
 
+__global__
+void repeat_kernel(int* input, int* output, int len) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < len - 1)
+        output[i] = input[i] == input[i+1];
+}
+
+__global__
+void write_kernel(int* mask, int* idx, int* output, int len) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < len && mask[i])
+        output[idx[i]] = i;
+}
 
 // find_repeats --
 //
@@ -198,6 +211,18 @@ int find_repeats(int* device_input, int length, int* device_output) {
     // exclusive_scan function with them. However, your implementation
     // must ensure that the results of find_repeats are correct given
     // the actual array length.
+    int* repeats;
+    int* prefix;
+    int c = nextPow2(length);
+    cudaMalloc(&repeats, c * sizeof(int));
+    cudaMalloc(&prefix, c * sizeof(int));
+    int mtpb = 1024;
+    int b = (device_input + mtpb - 1) / mtpb;
+    int tpb = min(device_input, mtpb);
+    repeat_kernel<<<b, tpb>>>(device_input, repeats, length);
+    cudaMemcpy(prefix, repeats, c * sizeof(int), cudaMemcpyDeviceToDevice);
+    exclusive_scan<<<b, tpb>>>(nullptr, length, prefix);
+    write_kernel<<<b, tpb>>>(repeats, prefix, device_output, length);
 
     return 0; 
 }
