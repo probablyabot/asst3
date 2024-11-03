@@ -34,6 +34,13 @@ void upsweep_kernel(int* result, int d) {
 }
 
 __global__
+void zero_kernel(int* result, int offset, int len) {
+    int i = offset + blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < len)
+        result[i] = 0;
+}
+
+__global__
 void downsweep_kernel(int* result, int d) {
     int i = (blockIdx.x * blockDim.x + threadIdx.x) * 2 * d;
     int t = result[i+d-1];
@@ -67,17 +74,24 @@ void exclusive_scan(int* input, int N, int* result)
     // on the CPU.  Your implementation will need to make multiple calls
     // to CUDA kernel functions (that you must write) to implement the
     // scan.
-    int threadsPerBlock = 256;
-    for (int d = 1; d <= N / 2; d *= 2) {
-        int blocks = (N / (2 * d) + threadsPerBlock - 1) / threadsPerBlock;
-        upsweep_kernel<<<blocks, threadsPerBlock>>>(result, d);
-        cudaDeviceSynchronize();  // necessary?
+    int max_tpb = 1024;
+    int c = nextPow2(N);
+    int total, b, tpb;
+    for (int d = 1; d <= c / 2; d *= 2) {
+        total = c / (2 * d);
+        b = max(total / max_tpb, 1);
+        tpb = min(total, max_tpb);
+        upsweep_kernel<<<b, tpb>>>(result, d);
     }
-    result[N-1] = 0;
-    for (int d = N / 2; d >= 1; d /= 2) {
-        int blocks = (N / (2 * d) + threadsPerBlock - 1) / threadsPerBlock;
-        downsweep_kernel<<<blocks, threadsPerBlock>>>(result, d);
-        cudaDeviceSynchronize();
+    total = c - N + 1;
+    b = (total + max_tpb - 1) / max_tpb;
+    tpb = min(total, max_tpb);
+    zero_kernel<<<b, tpb>>>(result, N - 1, c);
+    for (int d = c / 2; d >= 1; d /= 2) {
+        total = c / (2 * d);
+        b = max(total / max_tpb, 1);
+        tpb = min(total, max_tpb);
+        downsweep_kernel<<<b, tpb>>>(result, d);
     }
 }
 
