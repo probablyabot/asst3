@@ -716,15 +716,6 @@ CudaRenderer::render() {
     dim3 block_dim = 256;
     dim3 grid_dim((numCircles + block_dim.x - 1) / block_dim.x);
 
-    // int* deps;
-    // cudaMalloc(&deps, numCircles * sizeof(int));
-    // cudaMemset(deps, 0, sizeof(int));
-    // // need to debug this part
-    // for (int i = 1; i < numCircles; i++) {
-    //     fillDeps<<<(i+blockDim.x-1)/blockDim.x, blockDim>>>(deps, i);
-    // }
-    // printf("deps filled\n");
-    
     int rem = numCircles;
     int pixels = image->width * image->height;
     bool* done;
@@ -734,9 +725,8 @@ CudaRenderer::render() {
     cudaMemset(done, 0, numCircles * sizeof(bool));
     cudaMalloc(&can_render, numCircles * sizeof(bool));
     cudaMalloc(&pixel_to_circle, pixels * sizeof(int));
-    printf("%zu ", sizeof(bool));
     // long long t = ((long long) sq(numCircles) + blockDim.x - 1) / blockDim.x;
-    grid3 pixel_grid_dim((pixels + block_dim.x - 1) / block_dim.x);
+    dim3 pixel_grid_dim((pixels + block_dim.x - 1) / block_dim.x);
     while (rem) {
         cudaMemset(can_render, 1, numCircles * sizeof(bool));
         cudaMemset(pixel_to_circle, -1, pixels * sizeof(int));
@@ -744,27 +734,13 @@ CudaRenderer::render() {
             // cache grid dim in memory?
             setCanRender<<<(i+block_dim.x-1)/block_dim.x, block_dim>>>(i, can_render, done);
         }
+        // cudaDeviceSynchronize();
+        printf("can_render set\n");
         rem -= thrust::reduce(thrust::device, can_render, can_render + numCircles);
+        printf("%i circles remaining\n", rem);
         setPixelToCircle<<<grid_dim, block_dim>>>(can_render, pixel_to_circle);
-        renderPixels<<<pixel_grid_dim, block_dim>>>(pixel_to_circle);
+        // renderPixels<<<pixel_grid_dim, block_dim>>>(pixel_to_circle);
         updateDone<<<grid_dim, block_dim>>>(can_render, done);
-
-        // // try transformed_exclusive_scan if time
-        // int *ptr = thrust::exclusive_scan(thrust::device, can_render, can_render + numCircles, equals_zero_prefix);
-        // printf("done exclusive scanning\n");
-
-        // int p;
-        // bool last;
-        // cudaMemcpy(&p, ptr - 1, sizeof(int), cudaMemcpyDeviceToHost);
-        // cudaMemcpy(&last, can_render + numCircles - 1, sizeof(bool), cudaMemcpyDeviceToHost);
-        // p += last;
-
-        // done_ct += p;
-        // printf("rendering %i circles; last=%i\n", p, last);
-        // write<<<gridDim, blockDim>>>(equals_zero_prefix, idxs, equals_zero, numCircles);
-        // // update deps
-        // done_ct += 1;
-        // kernelRenderCircles<<<(p+blockDim.x-1)/blockDim.x, blockDim>>>(idxs, p);
     }
 
     cudaFree(done);
