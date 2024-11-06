@@ -726,7 +726,7 @@ CudaRenderer::render() {
     while (thrust::reduce(thrust::device, done, done + numCircles) < numCircles) {
         cudaDeviceSynchronize();
         double t0 = CycleTimer::currentSeconds();
-        thrust::transform(thrust::device, can_render, can_render + numCircles, done, can_render, thrust::logical_not<int>());
+        thrust::transform(thrust::device, done, done + numCircles, can_render, thrust::logical_not<int>());
         cudaMemset(pixel_to_circle, -1, pixels * sizeof(int));
         // optimization: iterate over undone
         cudaDeviceSynchronize();
