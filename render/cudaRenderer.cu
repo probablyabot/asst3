@@ -15,6 +15,10 @@
 #include "util.h"
 
 #include <thrust/scan.h>
+#include <thrust/device_ptr.h>
+#include <thrust/device_malloc.h>
+#include <thrust/device_free.h>
+#include <thrust/execution_policy.h>
 
 ////////////////////////////////////////////////////////////////////////////////////////
 // Putting all the cuda kernels here
@@ -453,24 +457,25 @@ __global__ void kernelRenderCircles(int* idxs, int len) {
     //can also do a first-order approx by adding 4 skinny rectangles onto inscribed square to contain circle
 }
 
-__global__ void fillDeps(float3 p_i, float rad_i) {
+__global__ void fillDeps(int* deps, int i) {
+    float3 p_i = *(float3*)(&cuConstRendererParams.position[3*i]);
+    float  rad_i = cuConstRendererParams.radius[i];
     int j = blockIdx.x * blockDim.x + threadIdx.x;
     float3 p = *(float3*)(&cuConstRendererParams.position[3*j]);
-    float  rad = cuConstRendererParams.radius[index];
+    float  rad = cuConstRendererParams.radius[j];
     if ((p.x - p_i.x) * (p.x - p_i.x) + (p.y - p_i.y) * (p.y - p_i.y) <= (rad_i + rad) * (rad_i + rad)) {
         deps[j]++;
     }
 }
 
-__global__ void findZeros(int* input, int* output, bool* mask, int len) {
+__global__ void findZeros(int* input, bool* output, bool* mask, int len) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < len) {
-        output[i] = !input[i] && !mask[i];
-        mask[i] = !input[i];
+    if (i < len && !mask[i]) {
+        output[i] = mask[i] = !input[i];
     }
 }
 
-__global__ void write(int* idx, int* output, int* mask, int len) {
+__global__ void write(int* idx, int* output, bool* mask, int len) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < len && mask[i])
         output[idx[i]] = i;
@@ -692,34 +697,40 @@ CudaRenderer::render() {
     cudaMalloc(&deps, numCircles * sizeof(int));
     cudaMemset(deps, 0, sizeof(int));
     for (int i = 1; i < numCircles; i++) {
-        float3 p = *(float3*)(&cuConstRendererParams.position[3*i]);
-        float  rad = cuConstRendererParams.radius[i];
-        fillDeps<<<(i+blockDim.x-1)/blockDim.x, blockDim>>>(p, rad);
+        fillDeps<<<(i+blockDim.x-1)/blockDim.x, blockDim>>>(deps, i);
         cudaDeviceSynchronize();
     }
+    printf("deps filled\n");
     
     int done_ct = 0;
     bool* done;
-    int* equals_zero;
+    bool* equals_zero; //rename
     int* equals_zero_prefix;
     int* idxs; // separate p_idxs and c_idxs?
     cudaMalloc(&done, numCircles * sizeof(bool));
     cudaMemset(done, 0, numCircles * sizeof(bool));
-    cudaMalloc(&equals_zero, numCircles * sizeof(int));
+    cudaMalloc(&equals_zero, numCircles * sizeof(bool));
     cudaMalloc(&equals_zero_prefix, numCircles * sizeof(int));
     cudaMalloc(&idxs, numCircles * sizeof(int));
-    while (done < numCircles) {
+    while (done_ct < numCircles) {
         findZeros<<<gridDim, blockDim>>>(deps, equals_zero, done, numCircles);
         // try transformed_exclusive_scan if time
-        int p = thrust::exclusive_scan(equals_zero, equals_zero + numCircles, equals_zero_prefix);
-        done_ct += p; //does this include last element?
-        printf("rendering %i circles\n", p);
+        int *ptr = thrust::exclusive_scan(thrust::device, equals_zero, equals_zero + numCircles, equals_zero_prefix);
+        printf("done exclusive scanning\n");
+
+        int p;
+        bool last;
+        cudaMemcpy(&p, ptr - 1, sizeof(int), cudaMemcpyDeviceToHost);
+        cudaMemcpy(&last, equals_zero + numCircles - 1, sizeof(bool), cudaMemcpyDeviceToHost);
+        p += last;
+
+        done_ct += p;
+        printf("rendering %i circles; last=%i\n", p, last);
         write<<<gridDim, blockDim>>>(equals_zero_prefix, idxs, equals_zero, numCircles);
         // update deps
-
-        kernelRenderCircles(idxs);
+        done_ct += 1;
+        kernelRenderCircles<<<(p+blockDim.x-1)/blockDim.x, blockDim>>>(idxs, p);
     }
-    // alternative potentially wasteful paradigm: calculate circles, then do a forall over all pixels
 
     cudaFree(deps);
     cudaFree(done);
