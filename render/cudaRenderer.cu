@@ -443,14 +443,14 @@ __global__ void kernelRenderCircles(int* idxs, int len) {
 
 __global__ void setCanRender(int j, bool* can_render, bool* done) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= j)
+    if (i >= j || done[i])
         return;
     float3 pi = *(float3*)(&cuConstRendererParams.position[3*i]);
     float  ri = cuConstRendererParams.radius[i];
     // can move this memory access into calling function?
     float3 pj = *(float3*)(&cuConstRendererParams.position[3*j]);
     float  rj = cuConstRendererParams.radius[j];
-    if (done[i] || sq(pi.x - pj.x) + sq(pi.y - pj.y) <= sq(ri + rj)) {
+    if (sq(pi.x - pj.x) + sq(pi.y - pj.y) <= sq(ri + rj)) {
         can_render[j] = false;
     }
 }
@@ -738,19 +738,20 @@ CudaRenderer::render() {
             // cache grid dim in memory?
             setCanRender<<<(i+block_dim.x-1)/block_dim.x, block_dim>>>(i, can_render, done);
         }
-        cudaMemcpy(debug, can_render, numCircles * sizeof(bool), cudaMemcpyDeviceToHost);
-        for (int i = 0; i < numCircles; i++)
-            printf("%i ", debug[i]);
-        printf("\n(end can_render)\n");
-        cudaMemcpy(debug, done, numCircles * sizeof(bool), cudaMemcpyDeviceToHost);
-        for (int i = 0; i < numCircles; i++)
-            printf("%i ", debug[i]);
-        printf("\n(end done)\n");
+        // cudaMemcpy(debug, can_render, numCircles * sizeof(bool), cudaMemcpyDeviceToHost);
+        // for (int i = 0; i < numCircles; i++)
+        //     printf("%i ", debug[i]);
+        // printf("\n(end can_render after setting)\n");
         rem -= thrust::reduce(thrust::device, can_render, can_render + numCircles);
         printf("%i circles remaining\n", rem);
         setPixelToCircle<<<grid_dim, block_dim>>>(can_render, pixel_to_circle);
         renderPixels<<<pixel_grid_dim, block_dim>>>(pixel_to_circle);
         updateDone<<<grid_dim, block_dim>>>(can_render, done);
+        // cudaDeviceSynchronize();
+        // cudaMemcpy(debug, done, numCircles * sizeof(bool), cudaMemcpyDeviceToHost);
+        // for (int i = 0; i < numCircles; i++)
+        //     printf("%i ", debug[i]);
+        // printf("\n(end done)\n");
     }
 
     cudaDeviceSynchronize();
