@@ -16,6 +16,7 @@
 
 #include <thrust/reduce.h>
 #include <thrust/execution_policy.h>
+#include "cycleTimer.h"
 
 #define sq(x) x * x
 #define TPB 256
@@ -729,12 +730,14 @@ CudaRenderer::render() {
     cudaMalloc(&can_render, numCircles * sizeof(bool));
     cudaMalloc(&pixel_to_circle, pixels * sizeof(int));
     dim3 pixel_grid_dim((pixels + block_dim.x - 1) / block_dim.x);
+    float total_t = 0;
 
     while (thrust::reduce(thrust::device, done, done + numCircles) < numCircles) {
         cudaMemset(can_render, 1, numCircles * sizeof(bool));
         cudaMemset(pixel_to_circle, -1, pixels * sizeof(int));
         // optimization: iterate over undone
         int prev_grid_dim;
+        int time = CycleTimer::currentSeconds();
         for (int j = 0; j < numCircles; j++) {
             // cache grid dim in memory?
             prev_grid_dim = max((j + block_dim.x - 1) / block_dim.x, 1);
@@ -746,6 +749,8 @@ CudaRenderer::render() {
             //     printf("%i ", debug[i]);
             // printf("\n");
         }
+        cudaDeviceSynchronize();
+        total_t += CycleTimer::currentSeconds() - time;
         // cudaMemcpy(debug, can_render, numCircles * sizeof(bool), cudaMemcpyDeviceToHost);
         // printf("can_render: ");
         // for (int i = 0; i < numCircles; i++)
@@ -762,6 +767,7 @@ CudaRenderer::render() {
         // printf("\n");
     }
 
+    printf("time spent in setCanRender: %.3f\n", total_t);
     cudaDeviceSynchronize();
     cudaFree(done);
     cudaFree(can_render);
