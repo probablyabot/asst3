@@ -491,11 +491,14 @@ __global__ void renderPixels(int* pixel_to_circle) {
     if (i >= w * h || pixel_to_circle[i] == -1)
         return;
 
-    float3 p = *(float3*)(&cuConstRendererParams.position[3*i]);
+    int x = i % w;
+    int y = i / w;
+    int circle = pixel_to_circle[i];
+    float3 p = *(float3*)(&cuConstRendererParams.position[3*circle]);
     float4* image_ptr = (float4*)(&cuConstRendererParams.imageData[4*i]);
-    float2 center = make_float2(1.f / w * (static_cast<float>(i % w) + 0.5f),
-                                1.f / h * (static_cast<float>(i / w) + 0.5f));
-    shadePixel(pixel_to_circle[i], center, p, image_ptr);
+    float2 center = make_float2(1.f / w * (static_cast<float>(x) + 0.5f),
+                                1.f / h * (static_cast<float>(y) + 0.5f));
+    shadePixel(circle, center, p, image_ptr);
 }
 
 __global__ void updateDone(bool* can_render, bool* done) {
@@ -720,13 +723,14 @@ CudaRenderer::render() {
     int pixels = image->width * image->height;
     bool* done;
     bool* can_render;
+    bool* debug = new bool[numCircles];
     int* pixel_to_circle;
     cudaMalloc(&done, numCircles * sizeof(bool));
     cudaMemset(done, 0, numCircles * sizeof(bool));
     cudaMalloc(&can_render, numCircles * sizeof(bool));
     cudaMalloc(&pixel_to_circle, pixels * sizeof(int));
-    // long long t = ((long long) sq(numCircles) + blockDim.x - 1) / blockDim.x;
     dim3 pixel_grid_dim((pixels + block_dim.x - 1) / block_dim.x);
+
     while (rem) {
         cudaMemset(can_render, 1, numCircles * sizeof(bool));
         cudaMemset(pixel_to_circle, -1, pixels * sizeof(int));
@@ -734,15 +738,22 @@ CudaRenderer::render() {
             // cache grid dim in memory?
             setCanRender<<<(i+block_dim.x-1)/block_dim.x, block_dim>>>(i, can_render, done);
         }
-        // cudaDeviceSynchronize();
-        printf("can_render set\n");
+        cudaMemcpy(debug, can_render, numCircles * sizeof(bool), cudaMemcpyDeviceToHost);
+        for (int i = 0; i < numCircles; i++)
+            printf("%i ", debug[i]);
+        printf("\n(end can_render)\n");
+        cudaMemcpy(debug, done, numCircles * sizeof(bool), cudaMemcpyDeviceToHost);
+        for (int i = 0; i < numCircles; i++)
+            printf("%i ", debug[i]);
+        printf("\n(end done)\n");
         rem -= thrust::reduce(thrust::device, can_render, can_render + numCircles);
         printf("%i circles remaining\n", rem);
         setPixelToCircle<<<grid_dim, block_dim>>>(can_render, pixel_to_circle);
-        // renderPixels<<<pixel_grid_dim, block_dim>>>(pixel_to_circle);
+        renderPixels<<<pixel_grid_dim, block_dim>>>(pixel_to_circle);
         updateDone<<<grid_dim, block_dim>>>(can_render, done);
     }
 
+    cudaDeviceSynchronize();
     cudaFree(done);
     cudaFree(can_render);
     cudaFree(pixel_to_circle);
