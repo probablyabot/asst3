@@ -14,6 +14,8 @@
 #include "sceneLoader.h"
 #include "util.h"
 
+#include <thrust/scan.h>
+
 ////////////////////////////////////////////////////////////////////////////////////////
 // Putting all the cuda kernels here
 ///////////////////////////////////////////////////////////////////////////////////////
@@ -399,12 +401,14 @@ void shadePixelWrapper(int circleIndex, int minX, int minY, short width, float3 
 // Each thread renders a circle.  Since there is no protection to
 // ensure order of update or mutual exclusion on the output image, the
 // resulting image will be incorrect.
-__global__ void kernelRenderCircles() {
+__global__ void kernelRenderCircles(int* idxs, int len) {
 
     int index = blockIdx.x * blockDim.x + threadIdx.x;
 
-    if (index >= cuConstRendererParams.numCircles)
+    if (index >= len)
         return;
+    
+    index = idxs[index];
 
     int index3 = 3 * index;
 
@@ -447,6 +451,29 @@ __global__ void kernelRenderCircles() {
 
     //pixel-parallel: dispatch all pixels in inscribed square first? (guaranteed hit)
     //can also do a first-order approx by adding 4 skinny rectangles onto inscribed square to contain circle
+}
+
+__global__ void fillDeps(float3 p_i, float rad_i) {
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
+    float3 p = *(float3*)(&cuConstRendererParams.position[3*j]);
+    float  rad = cuConstRendererParams.radius[index];
+    if ((p.x - p_i.x) * (p.x - p_i.x) + (p.y - p_i.y) * (p.y - p_i.y) <= (rad_i + rad) * (rad_i + rad)) {
+        deps[j]++;
+    }
+}
+
+__global__ void findZeros(int* input, int* output, bool* mask, int len) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < len) {
+        output[i] = !input[i] && !mask[i];
+        mask[i] = !input[i];
+    }
+}
+
+__global__ void write(int* idx, int* output, int* mask, int len) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < len && mask[i])
+        output[idx[i]] = i;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -657,11 +684,46 @@ CudaRenderer::advanceAnimation() {
 
 void
 CudaRenderer::render() {
-
     // 256 threads per block is a healthy number
     dim3 blockDim(256, 1);
     dim3 gridDim((numCircles + blockDim.x - 1) / blockDim.x);
 
-    kernelRenderCircles<<<gridDim, blockDim>>>();
-    cudaDeviceSynchronize();
+    int* deps;
+    cudaMalloc(&deps, numCircles * sizeof(int));
+    cudaMemset(deps, 0, sizeof(int));
+    for (int i = 1; i < numCircles; i++) {
+        float3 p = *(float3*)(&cuConstRendererParams.position[3*i]);
+        float  rad = cuConstRendererParams.radius[i];
+        fillDeps<<<(i+blockDim.x-1)/blockDim.x, blockDim>>>(p, rad);
+        cudaDeviceSynchronize();
+    }
+    
+    int done_ct = 0;
+    bool* done;
+    int* equals_zero;
+    int* equals_zero_prefix;
+    int* idxs; // separate p_idxs and c_idxs?
+    cudaMalloc(&done, numCircles * sizeof(bool));
+    cudaMemset(done, 0, numCircles * sizeof(bool));
+    cudaMalloc(&equals_zero, numCircles * sizeof(int));
+    cudaMalloc(&equals_zero_prefix, numCircles * sizeof(int));
+    cudaMalloc(&idxs, numCircles * sizeof(int));
+    while (done < numCircles) {
+        findZeros<<<gridDim, blockDim>>>(deps, equals_zero, done, numCircles);
+        // try transformed_exclusive_scan if time
+        int p = thrust::exclusive_scan(equals_zero, equals_zero + numCircles, equals_zero_prefix);
+        done_ct += p; //does this include last element?
+        printf("rendering %i circles\n", p);
+        write<<<gridDim, blockDim>>>(equals_zero_prefix, idxs, equals_zero, numCircles);
+        // update deps
+
+        kernelRenderCircles(idxs);
+    }
+    // alternative potentially wasteful paradigm: calculate circles, then do a forall over all pixels
+
+    cudaFree(deps);
+    cudaFree(done);
+    cudaFree(equals_zero);
+    cudaFree(equals_zero_prefix);
+    cudaFree(idxs);
 }
