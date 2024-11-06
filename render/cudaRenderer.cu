@@ -382,13 +382,15 @@ shadePixel(int circleIndex, float2 pixelCenter, float3 p, float4* imagePtr) {
 __device__ __inline__
 void shadePixelWrapper(int circleIndex, int minX, int minY, short width, float3 p) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= width ** 2)
+    if (i >= width * width)
         return;
     int pixelX = minX + i % width;
     int pixelY = minY + i / width;
-    float4 imagePtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth + pixelX)])
+    float invWidth = 1.f / cuConstRendererParams.imageWidth;
+    float invHeight = 1.f / cuConstRendererParams.imageHeight;
+    float4* imagePtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * cuConstRendererParams.imageWidth + pixelX)]);
     float2 pixelCenter = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
-                                                 invHeight * (static_cast<float>(pixelY) + 0.5f))
+                                                 invHeight * (static_cast<float>(pixelY) + 0.5f));
     shadePixel(circleIndex, pixelCenter, p, imagePtr);
 }
 
@@ -429,19 +431,19 @@ __global__ void kernelRenderCircles() {
     float invHeight = 1.f / imageHeight;
 
     // for all pixels in the bonding box
-    // for (int pixelY=screenMinY; pixelY<screenMaxY; pixelY++) {
-    //     float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth + screenMinX)]);
-    //     for (int pixelX=screenMinX; pixelX<screenMaxX; pixelX++) {
-    //         float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
-    //                                              invHeight * (static_cast<float>(pixelY) + 0.5f));
-    //         shadePixel(index, pixelCenterNorm, p, imgPtr);
-    //         imgPtr++;
-    //     }
-    // }
-    short width = screenMaxX - screenMinX;
-    short pixels = width * (screenMaxY - screenMinY)
-    int tpb = 256;
-    shadePixelWrapper<<<(pixels+tpb-1)/tpb, tpb>>>(index, screenMinX, screenMinY, width, p);
+    for (int pixelY=screenMinY; pixelY<screenMaxY; pixelY++) {
+        float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth + screenMinX)]);
+        for (int pixelX=screenMinX; pixelX<screenMaxX; pixelX++) {
+            float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
+                                                 invHeight * (static_cast<float>(pixelY) + 0.5f));
+            shadePixel(index, pixelCenterNorm, p, imgPtr);
+            imgPtr++;
+        }
+    }
+    // short width = screenMaxX - screenMinX;
+    // short pixels = width * (screenMaxY - screenMinY);
+    // int tpb = 256;
+    // shadePixelWrapper<<<(pixels+tpb-1)/tpb, tpb>>>(index, screenMinX, screenMinY, width, p);
 
     //pixel-parallel: dispatch all pixels in inscribed square first? (guaranteed hit)
     //can also do a first-order approx by adding 4 skinny rectangles onto inscribed square to contain circle
