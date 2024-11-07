@@ -420,21 +420,27 @@ __global__ void renderPixelsSnowflake(int ci, float3 p, int min_x, int min_y, in
     shadePixelSnowflake(ci, center, p, image_ptr);
 }
 
-__global__ void renderPixels(int ci, float3 p, float r, int min_x, int min_y, int w, int h) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= w * h)
+__global__ void renderPixels(int ci) {
+    int pi = blockIdx.x * blockDim.x + threadIdx.x;
+    int w = cuConstRendererParams.imageWidth;  // reading global memory bad?
+    int h = cuConstRendererParams.imageHeight;
+    if (pi >= w * h)
         return;
+    int x = pi % w;
+    int y = pi / w;
+    float inv_w = 1.f / w;
+    float inv_h = 1.f / h;
+    float4 rgba = make_float4(0, 0, 0, 0);
+    float2 center = make_float2(inv_w * (static_cast<float>(x) + 0.5f),
+                                inv_h * (static_cast<float>(y) + 0.5f));
 
-    int x = min_x + i % w;
-    int y = min_y + i / w;
-    int iw = cuConstRendererParams.imageWidth;
-    int ih = cuConstRendererParams.imageHeight;
-    float4* image_ptr = (float4*)(&cuConstRendererParams.imageData[4*(y*iw+x)]);
-    float2 center = make_float2(1.f / iw * (static_cast<float>(x) + 0.5f),
-                                1.f / ih * (static_cast<float>(y) + 0.5f));
-
-    if (sq(p.x - center.x) + sq(p.y - center.y) <= sq(r))
-        shadePixel(ci, image_ptr);
+    for (int i = ci; i < min(ci + 16, cuConstRendererParams.numCircles); i++) {
+        float3 p = *(float3*)(&cuConstRendererParams.position[3*i]);
+        float r = cuConstRendererParams.radius[i];  // pass these in as arguments?
+        if (sq(p.x - center.x) + sq(p.y - center.y) <= sq(r))
+            shadePixel(ci, &rgba);
+    }
+    *(float4*)(&cuConstRendererParams.imageData[4*(y*w+x)]) = rgba;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -662,16 +668,9 @@ void CudaRenderer::renderSnowflakes() {
 void CudaRenderer::renderCircles() {
     int w = image->width;
     int h = image->height;
-    for (int i = 0; i < numCircles; i++) {
-        float3 p = *(float3*)(&position[3*i]);
-        float rad = radius[i];
-        int min_x = CLAMP(static_cast<int>(w * (p.x - rad)), 0, w);
-        int max_x = CLAMP(static_cast<int>(w * (p.x + rad)) + 1, 0, w);
-        int min_y = CLAMP(static_cast<int>(h * (p.y - rad)), 0, h);
-        int max_y = CLAMP(static_cast<int>(h * (p.y + rad)) + 1, 0, h);
-        int wi = max_x - min_x;
-        int hi = max_y - min_y;
-        renderPixels<<<(wi*hi+TPB-1)/TPB, TPB>>>(i, p, rad, min_x, min_y, wi, hi);
+    int b = (w*h+TPB-1)/TPB
+    for (int i = 0; i < numCircles; i += 16) {
+        renderPixels<<<b, TPB>>>(i);
     }
 }
 
