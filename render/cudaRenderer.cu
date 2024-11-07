@@ -21,6 +21,7 @@
 #include "cycleTimer.h"
 
 #define sq(x) (x) * (x)
+#define CHUNK 16
 
 ////////////////////////////////////////////////////////////////////////////////////////
 // Putting all the cuda kernels here
@@ -378,7 +379,7 @@ shadePixelSnowflake(int circleIndex, float2 pixelCenter, float3 p, float4* image
 // pixel from the circle.  Update of the image is done in this
 // function.  Called by kernelRenderCircles()
 __device__ __inline__ void
-shadePixel(int circleIndex, float4* imagePtr) {
+shadePixel(int circleIndex, float4& cur_rgba) {
     float3 rgb;
     float alpha;
 
@@ -389,20 +390,10 @@ shadePixel(int circleIndex, float4* imagePtr) {
 
     float oneMinusAlpha = 1.f - alpha;
 
-    // BEGIN SHOULD-BE-ATOMIC REGION
-    // global memory read
-
-    float4 existingColor = *imagePtr;
-    float4 newColor;
-    newColor.x = alpha * rgb.x + oneMinusAlpha * existingColor.x;
-    newColor.y = alpha * rgb.y + oneMinusAlpha * existingColor.y;
-    newColor.z = alpha * rgb.z + oneMinusAlpha * existingColor.z;
-    newColor.w = alpha + existingColor.w;
-
-    // global memory write
-    *imagePtr = newColor;
-
-    // END SHOULD-BE-ATOMIC REGION
+    cur_rgba.x = alpha * rgb.x + oneMinusAlpha * cur_rgba.x;
+    cur_rgba.y = alpha * rgb.y + oneMinusAlpha * cur_rgba.y;
+    cur_rgba.z = alpha * rgb.z + oneMinusAlpha * cur_rgba.z;
+    cur_rgba.w = alpha + cur_rgba.w;
 }
 
 __global__ void renderPixelsSnowflake(int ci, float3 p, int min_x, int min_y, int w, int h) {
@@ -430,15 +421,15 @@ __global__ void renderPixels(int ci) {
     int y = pi / w;
     float inv_w = 1.f / w;
     float inv_h = 1.f / h;
-    float4 rgba = make_float4(0, 0, 0, 0);
+    float4 rgba = *(float4*)(&cuConstRendererParams.imageData[4*(y*w+x)]);
     float2 center = make_float2(inv_w * (static_cast<float>(x) + 0.5f),
                                 inv_h * (static_cast<float>(y) + 0.5f));
 
-    for (int i = ci; i < min(ci + 16, cuConstRendererParams.numCircles); i++) {
+    for (int i = ci; i < min(ci + CHUNK, cuConstRendererParams.numCircles); i++) {
         float3 p = *(float3*)(&cuConstRendererParams.position[3*i]);
         float r = cuConstRendererParams.radius[i];  // pass these in as arguments?
         if (sq(p.x - center.x) + sq(p.y - center.y) <= sq(r))
-            shadePixel(ci, &rgba);
+            shadePixel(i, rgba);
     }
     *(float4*)(&cuConstRendererParams.imageData[4*(y*w+x)]) = rgba;
 }
@@ -668,8 +659,8 @@ void CudaRenderer::renderSnowflakes() {
 void CudaRenderer::renderCircles() {
     int w = image->width;
     int h = image->height;
-    int b = (w*h+TPB-1)/TPB
-    for (int i = 0; i < numCircles; i += 16) {
+    int b = (w*h+TPB-1)/TPB;
+    for (int i = 0; i < numCircles; i += CHUNK) {
         renderPixels<<<b, TPB>>>(i);
     }
 }
