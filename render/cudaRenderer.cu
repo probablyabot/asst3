@@ -463,10 +463,10 @@ __global__ void setPixelToCircle(bool* can_render, int* pixel_to_circle) {
 
     short w = cuConstRendererParams.imageWidth;
     short h = cuConstRendererParams.imageHeight;
-    short min_x = min(max(static_cast<short>(w * (p.x - rad)), 0), w);
-    short max_x = min(max(static_cast<short>(w * (p.x + rad)) + 1, 0), w);
-    short min_y = min(max(static_cast<short>(h * (p.y - rad)), 0), h);
-    short max_y = min(max(static_cast<short>(h * (p.y + rad)) + 1, 0), h);
+    short min_x = CLAMP(static_cast<short>(w * (p.x - rad)), 0, w);
+    short max_x = CLAMP(static_cast<short>(w * (p.x + rad)) + 1, 0, w);
+    short min_y = CLAMP(static_cast<short>(h * (p.y - rad)), 0, h);
+    short max_y = CLAMP(static_cast<short>(h * (p.y + rad)) + 1, 0, h);
 
     for (int y = min_y; y < max_y; y++) {
         for (int x = min_x; x < max_x; x++) {
@@ -712,6 +712,7 @@ CudaRenderer::render() {
     int pixels = image->width * image->height;
     dim3 pixel_grid_dim((pixels + TPB - 1) / TPB);
 
+    // move this initialization block to setup(). use global arrays?
     int* done;
     bool* can_render;
     // bool* debug = new bool[numCircles];
@@ -728,18 +729,10 @@ CudaRenderer::render() {
         double t0 = CycleTimer::currentSeconds();
         thrust::transform(thrust::device, done, done + numCircles, can_render, thrust::logical_not<int>());
         cudaMemset(pixel_to_circle, -1, pixels * sizeof(int));
-        // optimization: iterate over undone
         cudaDeviceSynchronize();
         double time = CycleTimer::currentSeconds();
         mem += time - t0;
-        
         setCanRender<<<pair_grid_dim, pair_block_dim>>>(can_render, done);
-            // cudaDeviceSynchronize();
-            // cudaMemcpy(debug, can_render, numCircles * sizeof(bool), cudaMemcpyDeviceToHost);
-            // printf("iteration %i: ", j);
-            // for (int i = 0; i < numCircles; i++)
-            //     printf("%i ", debug[i]);
-            // printf("\n");
         cudaDeviceSynchronize();
         double t1 = CycleTimer::currentSeconds();
         crt += t1 - time;
@@ -764,10 +757,10 @@ CudaRenderer::render() {
         // printf("\n");
     }
 
-    printf("time spent in memsets: %.3f ms\n", mem);
-    printf("time spent in setCanRender: %.3f ms\n", crt);
-    printf("time spent in pixelToCircle: %.3f ms\n", ptc);
-    printf("time spent in renderPixel: %.3f ms\n", rp);
+    printf("time spent in memsets: %.3f ms\n", mem*1000.f);
+    printf("time spent in setCanRender: %.3f ms\n", crt*1000.f);
+    printf("time spent in pixelToCircle: %.3f ms\n", ptc*1000.f);
+    printf("time spent in renderPixel: %.3f ms\n", rp*1000.f);
     cudaDeviceSynchronize();
     cudaFree(done);
     cudaFree(can_render);
