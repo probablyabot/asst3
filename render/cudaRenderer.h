@@ -47,6 +47,10 @@ public:
 
     void advanceAnimation();
 
+    void renderSnowflakes();
+
+    void renderCircles();
+
     void render();
 
     void shadePixel(

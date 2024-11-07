@@ -20,7 +20,7 @@
 #include <thrust/execution_policy.h>
 #include "cycleTimer.h"
 
-#define sq(x) x * x
+#define sq(x) (x) * (x)
 
 ////////////////////////////////////////////////////////////////////////////////////////
 // Putting all the cuda kernels here
@@ -326,13 +326,13 @@ __global__ void kernelAdvanceSnowflake() {
 // pixel from the circle.  Update of the image is done in this
 // function.  Called by kernelRenderCircles()
 __device__ __inline__ void
-shadePixel(int circleIndex, float2 pixelCenter, float3 p, float4* imagePtr) {
+shadePixelSnowflake(int circleIndex, float2 pixelCenter, float3 p, float4* imagePtr) {
 
     float diffX = p.x - pixelCenter.x;
     float diffY = p.y - pixelCenter.y;
     float pixelDist = diffX * diffX + diffY * diffY;
 
-    float rad = cuConstRendererParams.radius[circleIndex];;
+    float rad = cuConstRendererParams.radius[circleIndex];
     float maxDist = rad * rad;
 
     // circle does not contribute to the image
@@ -344,30 +344,15 @@ shadePixel(int circleIndex, float2 pixelCenter, float3 p, float4* imagePtr) {
 
     // there is a non-zero contribution.  Now compute the shading value
 
-    // suggestion: This conditional is in the inner loop.  Although it
-    // will evaluate the same for all threads, there is overhead in
-    // setting up the lane masks etc to implement the conditional.  It
-    // would be wise to perform this logic outside of the loop next in
-    // kernelRenderCircles.  (If feeling good about yourself, you
-    // could use some specialized template magic).
-    if (cuConstRendererParams.sceneName == SNOWFLAKES || cuConstRendererParams.sceneName == SNOWFLAKES_SINGLE_FRAME) {
+    const float kCircleMaxAlpha = .5f;
+    const float falloffScale = 4.f;
 
-        const float kCircleMaxAlpha = .5f;
-        const float falloffScale = 4.f;
+    float normPixelDist = sqrt(pixelDist) / rad;
+    rgb = lookupColor(normPixelDist);
 
-        float normPixelDist = sqrt(pixelDist) / rad;
-        rgb = lookupColor(normPixelDist);
-
-        float maxAlpha = .6f + .4f * (1.f-p.z);
-        maxAlpha = kCircleMaxAlpha * fmaxf(fminf(maxAlpha, 1.f), 0.f); // kCircleMaxAlpha * clamped value
-        alpha = maxAlpha * exp(-1.f * falloffScale * normPixelDist * normPixelDist);
-
-    } else {
-        // simple: each circle has an assigned color
-        int index3 = 3 * circleIndex;
-        rgb = *(float3*)&(cuConstRendererParams.color[index3]);
-        alpha = .5f;
-    }
+    float maxAlpha = .6f + .4f * (1.f-p.z);
+    maxAlpha = kCircleMaxAlpha * fmaxf(fminf(maxAlpha, 1.f), 0.f); // kCircleMaxAlpha * clamped value
+    alpha = maxAlpha * exp(-1.f * falloffScale * normPixelDist * normPixelDist);
 
     float oneMinusAlpha = 1.f - alpha;
 
@@ -387,95 +372,40 @@ shadePixel(int circleIndex, float2 pixelCenter, float3 p, float4* imagePtr) {
     // END SHOULD-BE-ATOMIC REGION
 }
 
-// kernelRenderCircles -- (CUDA device code)
+// shadePixel -- (CUDA device code)
 //
-// Each thread renders a circle.  Since there is no protection to
-// ensure order of update or mutual exclusion on the output image, the
-// resulting image will be incorrect.
-__global__ void kernelRenderCircles(int* idxs, int len) {
+// given a pixel and a circle, determines the contribution to the
+// pixel from the circle.  Update of the image is done in this
+// function.  Called by kernelRenderCircles()
+__device__ __inline__ void
+shadePixel(int circleIndex, float4* imagePtr) {
+    float3 rgb;
+    float alpha;
 
-    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    // simple: each circle has an assigned color
+    int index3 = 3 * circleIndex;
+    rgb = *(float3*)&(cuConstRendererParams.color[index3]);
+    alpha = .5f;
 
-    if (index >= len)
-        return;
-    
-    index = idxs[index];
+    float oneMinusAlpha = 1.f - alpha;
 
-    int index3 = 3 * index;
+    // BEGIN SHOULD-BE-ATOMIC REGION
+    // global memory read
 
-    // read position and radius
-    float3 p = *(float3*)(&cuConstRendererParams.position[index3]);
-    float  rad = cuConstRendererParams.radius[index];
+    float4 existingColor = *imagePtr;
+    float4 newColor;
+    newColor.x = alpha * rgb.x + oneMinusAlpha * existingColor.x;
+    newColor.y = alpha * rgb.y + oneMinusAlpha * existingColor.y;
+    newColor.z = alpha * rgb.z + oneMinusAlpha * existingColor.z;
+    newColor.w = alpha + existingColor.w;
 
-    // compute the bounding box of the circle. The bound is in integer
-    // screen coordinates, so it's clamped to the edges of the screen.
-    short imageWidth = cuConstRendererParams.imageWidth;
-    short imageHeight = cuConstRendererParams.imageHeight;
-    short minX = static_cast<short>(imageWidth * (p.x - rad));
-    short maxX = static_cast<short>(imageWidth * (p.x + rad)) + 1;
-    short minY = static_cast<short>(imageHeight * (p.y - rad));
-    short maxY = static_cast<short>(imageHeight * (p.y + rad)) + 1;
+    // global memory write
+    *imagePtr = newColor;
 
-    // a bunch of clamps.  Is there a CUDA built-in for this?
-    short screenMinX = (minX > 0) ? ((minX < imageWidth) ? minX : imageWidth) : 0;
-    short screenMaxX = (maxX > 0) ? ((maxX < imageWidth) ? maxX : imageWidth) : 0;
-    short screenMinY = (minY > 0) ? ((minY < imageHeight) ? minY : imageHeight) : 0;
-    short screenMaxY = (maxY > 0) ? ((maxY < imageHeight) ? maxY : imageHeight) : 0;
-
-    float invWidth = 1.f / imageWidth;
-    float invHeight = 1.f / imageHeight;
-
-    // for all pixels in the bonding box
-    for (int pixelY=screenMinY; pixelY<screenMaxY; pixelY++) {
-        float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth + screenMinX)]);
-        for (int pixelX=screenMinX; pixelX<screenMaxX; pixelX++) {
-            float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
-                                                 invHeight * (static_cast<float>(pixelY) + 0.5f));
-            shadePixel(index, pixelCenterNorm, p, imgPtr);
-            imgPtr++;
-        }
-    }
-    //pixel-parallel: dispatch all pixels in inscribed square first? (guaranteed hit)
-    //can also do a first-order approx by adding 4 skinny rectangles onto inscribed square to contain circle
+    // END SHOULD-BE-ATOMIC REGION
 }
 
-__global__ void fillDeps(int* deps) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    int j = blockIdx.y * blockDim.y + threadIdx.y;
-    if (i >= j || j >= cuConstRendererParams.numCircles)
-        return;
-    float3 pi = *(float3*)(&cuConstRendererParams.position[3*i]);
-    float  ri = cuConstRendererParams.radius[i];
-    float3 pj = *(float3*)(&cuConstRendererParams.position[3*j]);
-    float  rj = cuConstRendererParams.radius[j];
-    if (sq(pi.x - pj.x) + sq(pi.y - pj.y) <= sq(ri + rj)) {
-        atomicAdd(&deps[j], 1);
-    }
-}
-
-__global__ void getIdxs(bool* can_render, int* idxs, int* prefix) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < cuConstRendererParams.numCircles && can_render[i]) {
-        idxs[prefix[i]] = i;
-    }
-}
-
-__global__ void updateDeps(int r, int* deps, int* idxs) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    int j = blockIdx.y * blockDim.y + threadIdx.y;
-    if (i >= r || idxs[i] > j || j >= cuConstRendererParams.numCircles)
-        return;
-    i = idxs[i];
-    float3 pi = *(float3*)(&cuConstRendererParams.position[3*i]);
-    float  ri = cuConstRendererParams.radius[i];
-    float3 pj = *(float3*)(&cuConstRendererParams.position[3*j]);
-    float  rj = cuConstRendererParams.radius[j];
-    if (sq(pi.x - pj.x) + sq(pi.y - pj.y) <= sq(ri + rj)) {
-        atomicSub(&deps[j], 1);
-    }
-}
-
-__global__ void renderPixels(int ci, float3 p, int min_x, int min_y, int w, int h) {
+__global__ void renderPixelsSnowflake(int ci, float3 p, int min_x, int min_y, int w, int h) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= w * h)
         return;
@@ -487,7 +417,24 @@ __global__ void renderPixels(int ci, float3 p, int min_x, int min_y, int w, int 
     float4* image_ptr = (float4*)(&cuConstRendererParams.imageData[4*(y*iw+x)]);
     float2 center = make_float2(1.f / iw * (static_cast<float>(x) + 0.5f),
                                 1.f / ih * (static_cast<float>(y) + 0.5f));
-    shadePixel(ci, center, p, image_ptr);
+    shadePixelSnowflake(ci, center, p, image_ptr);
+}
+
+__global__ void renderPixels(int ci, float3 p, float r, int min_x, int min_y, int w, int h) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= w * h)
+        return;
+
+    int x = min_x + i % w;
+    int y = min_y + i / w;
+    int iw = cuConstRendererParams.imageWidth;
+    int ih = cuConstRendererParams.imageHeight;
+    float4* image_ptr = (float4*)(&cuConstRendererParams.imageData[4*(y*iw+x)]);
+    float2 center = make_float2(1.f / iw * (static_cast<float>(x) + 0.5f),
+                                1.f / ih * (static_cast<float>(y) + 0.5f));
+
+    if (sq(p.x - center.x) + sq(p.y - center.y) <= sq(r))
+        shadePixel(ci, image_ptr);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -696,88 +643,142 @@ CudaRenderer::advanceAnimation() {
     cudaDeviceSynchronize();
 }
 
-void
-CudaRenderer::render() {
-    int* deps;
-    bool* can_render;
-    int* idxs;
-    int* prefix;   
-    cudaMalloc(&deps, numCircles * sizeof(int));
-    cudaMalloc(&can_render, numCircles * sizeof(bool));
-    cudaMalloc(&idxs, numCircles * sizeof(int));
-    cudaMalloc(&prefix, numCircles * sizeof(int));
-    printf("allocated arrays! starting render\n");
-    // 256 threads per block is a healthy number
-    dim3 block_dim(TPB);
-    dim3 grid_dim((numCircles + TPB - 1) / TPB);
-    dim3 pair_block_dim(SQRT_TPB, SQRT_TPB);
-    int x = (numCircles + SQRT_TPB - 1) / SQRT_TPB;
-    dim3 pair_grid_dim(x, x);
+void CudaRenderer::renderSnowflakes() {
     int w = image->width;
     int h = image->height;
-    dim3 pixel_grid_dim((w * h + TPB - 1) / TPB);
+    for (int i = 0; i < numCircles; i++) {
+        float3 p = *(float3*)(&position[3*i]);
+        float rad = radius[i];
+        int min_x = CLAMP(static_cast<int>(w * (p.x - rad)), 0, w);
+        int max_x = CLAMP(static_cast<int>(w * (p.x + rad)) + 1, 0, w);
+        int min_y = CLAMP(static_cast<int>(h * (p.y - rad)), 0, h);
+        int max_y = CLAMP(static_cast<int>(h * (p.y + rad)) + 1, 0, h);
+        int wi = max_x - min_x;
+        int hi = max_y - min_y;
+        renderPixelsSnowflake<<<(wi*hi+TPB-1)/TPB, TPB>>>(i, p, min_x, min_y, wi, hi);
+    }
+}
 
-    // move this initialization block to setup(). use global arrays?
-    // bool* debug = new bool[numCircles];
-    // int* debug_d = new int[numCircles];
-    // int* debug_i = new int[numCircles];
-    // int* pixel_to_circle;
-    // double mem = 0.0, crt = 0.0, ptc = 0.0, rp = 0.0;
+void CudaRenderer::renderCircles() {
+    int w = image->width;
+    int h = image->height;
+    for (int i = 0; i < numCircles; i++) {
+        float3 p = *(float3*)(&position[3*i]);
+        float rad = radius[i];
+        int min_x = CLAMP(static_cast<int>(w * (p.x - rad)), 0, w);
+        int max_x = CLAMP(static_cast<int>(w * (p.x + rad)) + 1, 0, w);
+        int min_y = CLAMP(static_cast<int>(h * (p.y - rad)), 0, h);
+        int max_y = CLAMP(static_cast<int>(h * (p.y + rad)) + 1, 0, h);
+        int wi = max_x - min_x;
+        int hi = max_y - min_y;
+        renderPixels<<<(wi*hi+TPB-1)/TPB, TPB>>>(i, p, rad, min_x, min_y, wi, hi);
+    }
+}
 
-    cudaMemset(deps, 0, numCircles * sizeof(int));
-    // printf("filling deps... ");
-    fillDeps<<<pair_grid_dim, pair_block_dim>>>(deps);
-    cudaDeviceSynchronize();
+void
+CudaRenderer::render() {
+    // int* deps;
+    // int* can_render;
+    // int* idxs;
+    // int* prefix;   
+    // cudaMalloc(&deps, numCircles * sizeof(int));
+    // cudaMalloc(&can_render, numCircles * sizeof(int));
+    // cudaMalloc(&idxs, numCircles * sizeof(int));
+    // cudaMalloc(&prefix, numCircles * sizeof(int));
+    // // 256 threads per block is a healthy number
+    // dim3 block_dim(TPB);
+    // dim3 grid_dim((numCircles + TPB - 1) / TPB);
+    // dim3 pair_block_dim(SQRT_TPB, SQRT_TPB);
+    // int x = (numCircles + SQRT_TPB - 1) / SQRT_TPB;
+    // dim3 pair_grid_dim(x, x);
+    // int w = image->width;
+    // int h = image->height;
+    // dim3 pixel_grid_dim((w * h + TPB - 1) / TPB);
+
+    // // move this initialization block to setup(). use global arrays?
+    // int* debug = new int[numCircles];
+    // // int* debug_d = new int[numCircles];
+    // // int* debug_i = new int[numCircles];
+    // // int* pixel_to_circle;
+    // double fd = 0.0, gi = 0.0, ud = 0.0, rp = 0.0, th = 0.0;
+
+    // cudaMemset(deps, 0, numCircles * sizeof(int));
+    // // printf("filling deps... ");
+    // double t0 = CycleTimer::currentSeconds();
+    // fillDeps<<<pair_grid_dim, pair_block_dim>>>(deps, can_render);
+    // cudaDeviceSynchronize();
+    // fd = CycleTimer::currentSeconds() - t0;
+
+    // thrust::transform(thrust::device, deps, deps + numCircles, can_render, thrust::logical_not<int>());
     // cudaMemcpy(debug_d, deps, numCircles * sizeof(int), cudaMemcpyDeviceToHost);
     // printf("deps filled: ");
     // for (int i = 0; i < numCircles; i++) printf("%i ", debug_d[i]);
     // printf("\n");
 
-    int rem = numCircles;
-    int* idxs_local = new int[numCircles];
-    while (rem) {
-        thrust::transform(thrust::device, deps, deps + numCircles, can_render, thrust::logical_not<int>());
-        // cudaMemcpy(debug, can_render, numCircles * sizeof(bool), cudaMemcpyDeviceToHost);
-        // printf("cr: ");
-        // for (int i = 0; i < numCircles; i++) printf("%i ", debug[i]);
-        // printf("\n");
+    // int rem = numCircles;
+    // int* idxs_local = new int[numCircles];
+    // while (rem) {
+    //     // cudaMemcpy(debug, can_render, numCircles * sizeof(int), cudaMemcpyDeviceToHost);
+    //     // printf("cr: ");
+    //     // for (int i = 0; i < numCircles; i++) printf("%i ", debug[i]);
+    //     // printf("\n");
 
-        int r = thrust::reduce(thrust::device, can_render, can_render + numCircles);
-        if (r > 1)
-            printf("rendering %i circles\n", r);
+    //     double tn1 = CycleTimer::currentSeconds();
+    //     int* pr = thrust::exclusive_scan(thrust::device, can_render, can_render + numCircles, prefix);
+    //     int* last = new int[2];
+    //     cudaMemcpy(last, pr - 1, sizeof(int), cudaMemcpyDeviceToHost);
+    //     cudaMemcpy(last + 1, can_render + numCircles - 1, sizeof(int), cudaMemcpyDeviceToHost);
+    //     int r = last[0] + last[1];
+    //     cudaDeviceSynchronize();
+    //     t0 = CycleTimer::currentSeconds();
+    //     th += t0 - tn1;
 
-        thrust::exclusive_scan(thrust::device, can_render, can_render + numCircles, prefix);
-        getIdxs<<<grid_dim, block_dim>>>(can_render, idxs, prefix);
-        cudaMemcpy(idxs_local, idxs, r * sizeof(int), cudaMemcpyDeviceToHost);
+    //     getIdxs<<<grid_dim, block_dim>>>(can_render, idxs, prefix);
+    //     cudaMemcpy(idxs_local, idxs, r * sizeof(int), cudaMemcpyDeviceToHost);
+    //     double t1 = CycleTimer::currentSeconds();
+    //     gi += t1 - t0;
 
-        dim3 update_grid_dim((r + SQRT_TPB - 1) / SQRT_TPB, x);
-        updateDeps<<<update_grid_dim, pair_block_dim>>>(r, deps, idxs);
-        // cudaMemcpy(debug_d, deps, numCircles * sizeof(int), cudaMemcpyDeviceToHost);
-        // printf("deps updated: ");
-        // for (int i = 0; i < numCircles; i++) printf("%i ", debug_d[i]);
-        // printf("\n");
-        for (int j = 0; j < r; j++) {
-            int i = idxs_local[j];
-            float3 p = *(float3*)(&position[3*i]);
-            float rad = radius[i];
-            int min_x = CLAMP(static_cast<int>(w * (p.x - rad)), 0, w);
-            int max_x = CLAMP(static_cast<int>(w * (p.x + rad)) + 1, 0, w);
-            int min_y = CLAMP(static_cast<int>(h * (p.y - rad)), 0, h);
-            int max_y = CLAMP(static_cast<int>(h * (p.y + rad)) + 1, 0, h);
-            int wi = max_x - min_x;
-            int hi = max_y - min_y;
-            renderPixels<<<(wi*hi+TPB-1)/TPB, TPB>>>(i, p, min_x, min_y, wi, hi);
-        }
-        rem -= r;
+    //     dim3 update_grid_dim((r + SQRT_TPB - 1) / SQRT_TPB, x);
+    //     updateDeps<<<update_grid_dim, pair_block_dim>>>(r, deps, can_render, idxs);
+    //     cudaDeviceSynchronize();
+    //     double t2 = CycleTimer::currentSeconds();
+    //     ud += t2 - t1;
+    //     // cudaMemcpy(debug_d, deps, numCircles * sizeof(int), cudaMemcpyDeviceToHost);
+    //     // printf("deps updated: ");
+    //     // for (int i = 0; i < numCircles; i++) printf("%i ", debug_d[i]);
+    //     // printf("\n");
+    //     for (int j = 0; j < r; j++) {
+    //         int i = idxs_local[j];
+    //         float3 p = *(float3*)(&position[3*i]);
+    //         float rad = radius[i];
+    //         int min_x = CLAMP(static_cast<int>(w * (p.x - rad)), 0, w);
+    //         int max_x = CLAMP(static_cast<int>(w * (p.x + rad)) + 1, 0, w);
+    //         int min_y = CLAMP(static_cast<int>(h * (p.y - rad)), 0, h);
+    //         int max_y = CLAMP(static_cast<int>(h * (p.y + rad)) + 1, 0, h);
+    //         int wi = max_x - min_x;
+    //         int hi = max_y - min_y;
+    //         renderPixels<<<(wi*hi+TPB-1)/TPB, TPB>>>(i, p, min_x, min_y, wi, hi);
+    //     }
+    //     cudaDeviceSynchronize();
+    //     double t3 = CycleTimer::currentSeconds();
+    //     rp += t3 - t2;
+    //     rem -= r;
+    // }
+    if (sceneName == SNOWFLAKES || sceneName == SNOWFLAKES_SINGLE_FRAME) {
+        renderSnowflakes();
+    }
+    else {
+        renderCircles();
     }
 
     cudaDeviceSynchronize();
-    // printf("time spent in memsets: %.3f ms\n", mem*1000.f);
-    // printf("time spent in setCanRender: %.3f ms\n", crt*1000.f);
-    // printf("time spent in pixelToCircle: %.3f ms\n", ptc*1000.f);
-    // printf("time spent in renderPixel: %.3f ms\n", rp*1000.f);
-    cudaFree(deps);
-    cudaFree(can_render);
-    cudaFree(idxs);
-    cudaFree(prefix);
+    // printf("time spent in fillDeps: %.3fms\n", 1000.f * fd);
+    // printf("time spent in getIdxs: %.3f ms\n", 1000.f * gi);
+    // printf("time spent in updateDeps: %.3f ms\n", 1000.f * ud);
+    // printf("time spent in renderPixels: %.3f ms\n", 1000.f * rp);
+    // printf("time spent in thrust: %.3f ms\n", 1000.f * th);
+    // cudaFree(deps);
+    // cudaFree(can_render);
+    // cudaFree(idxs);
+    // cudaFree(prefix);
 }
