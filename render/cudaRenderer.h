@@ -36,6 +36,8 @@ public:
 
     void setup();
 
+    void initializeArrays();
+
     void loadScene(SceneName name);
 
     void allocOutputImage(int width, int height);
