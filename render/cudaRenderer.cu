@@ -677,93 +677,6 @@ void CudaRenderer::renderCircles() {
 
 void
 CudaRenderer::render() {
-    // int* deps;
-    // int* can_render;
-    // int* idxs;
-    // int* prefix;   
-    // cudaMalloc(&deps, numCircles * sizeof(int));
-    // cudaMalloc(&can_render, numCircles * sizeof(int));
-    // cudaMalloc(&idxs, numCircles * sizeof(int));
-    // cudaMalloc(&prefix, numCircles * sizeof(int));
-    // // 256 threads per block is a healthy number
-    // dim3 block_dim(TPB);
-    // dim3 grid_dim((numCircles + TPB - 1) / TPB);
-    // dim3 pair_block_dim(SQRT_TPB, SQRT_TPB);
-    // int x = (numCircles + SQRT_TPB - 1) / SQRT_TPB;
-    // dim3 pair_grid_dim(x, x);
-    // int w = image->width;
-    // int h = image->height;
-    // dim3 pixel_grid_dim((w * h + TPB - 1) / TPB);
-
-    // // move this initialization block to setup(). use global arrays?
-    // int* debug = new int[numCircles];
-    // // int* debug_d = new int[numCircles];
-    // // int* debug_i = new int[numCircles];
-    // // int* pixel_to_circle;
-    // double fd = 0.0, gi = 0.0, ud = 0.0, rp = 0.0, th = 0.0;
-
-    // cudaMemset(deps, 0, numCircles * sizeof(int));
-    // // printf("filling deps... ");
-    // double t0 = CycleTimer::currentSeconds();
-    // fillDeps<<<pair_grid_dim, pair_block_dim>>>(deps, can_render);
-    // cudaDeviceSynchronize();
-    // fd = CycleTimer::currentSeconds() - t0;
-
-    // thrust::transform(thrust::device, deps, deps + numCircles, can_render, thrust::logical_not<int>());
-    // cudaMemcpy(debug_d, deps, numCircles * sizeof(int), cudaMemcpyDeviceToHost);
-    // printf("deps filled: ");
-    // for (int i = 0; i < numCircles; i++) printf("%i ", debug_d[i]);
-    // printf("\n");
-
-    // int rem = numCircles;
-    // int* idxs_local = new int[numCircles];
-    // while (rem) {
-    //     // cudaMemcpy(debug, can_render, numCircles * sizeof(int), cudaMemcpyDeviceToHost);
-    //     // printf("cr: ");
-    //     // for (int i = 0; i < numCircles; i++) printf("%i ", debug[i]);
-    //     // printf("\n");
-
-    //     double tn1 = CycleTimer::currentSeconds();
-    //     int* pr = thrust::exclusive_scan(thrust::device, can_render, can_render + numCircles, prefix);
-    //     int* last = new int[2];
-    //     cudaMemcpy(last, pr - 1, sizeof(int), cudaMemcpyDeviceToHost);
-    //     cudaMemcpy(last + 1, can_render + numCircles - 1, sizeof(int), cudaMemcpyDeviceToHost);
-    //     int r = last[0] + last[1];
-    //     cudaDeviceSynchronize();
-    //     t0 = CycleTimer::currentSeconds();
-    //     th += t0 - tn1;
-
-    //     getIdxs<<<grid_dim, block_dim>>>(can_render, idxs, prefix);
-    //     cudaMemcpy(idxs_local, idxs, r * sizeof(int), cudaMemcpyDeviceToHost);
-    //     double t1 = CycleTimer::currentSeconds();
-    //     gi += t1 - t0;
-
-    //     dim3 update_grid_dim((r + SQRT_TPB - 1) / SQRT_TPB, x);
-    //     updateDeps<<<update_grid_dim, pair_block_dim>>>(r, deps, can_render, idxs);
-    //     cudaDeviceSynchronize();
-    //     double t2 = CycleTimer::currentSeconds();
-    //     ud += t2 - t1;
-    //     // cudaMemcpy(debug_d, deps, numCircles * sizeof(int), cudaMemcpyDeviceToHost);
-    //     // printf("deps updated: ");
-    //     // for (int i = 0; i < numCircles; i++) printf("%i ", debug_d[i]);
-    //     // printf("\n");
-    //     for (int j = 0; j < r; j++) {
-    //         int i = idxs_local[j];
-    //         float3 p = *(float3*)(&position[3*i]);
-    //         float rad = radius[i];
-    //         int min_x = CLAMP(static_cast<int>(w * (p.x - rad)), 0, w);
-    //         int max_x = CLAMP(static_cast<int>(w * (p.x + rad)) + 1, 0, w);
-    //         int min_y = CLAMP(static_cast<int>(h * (p.y - rad)), 0, h);
-    //         int max_y = CLAMP(static_cast<int>(h * (p.y + rad)) + 1, 0, h);
-    //         int wi = max_x - min_x;
-    //         int hi = max_y - min_y;
-    //         renderPixels<<<(wi*hi+TPB-1)/TPB, TPB>>>(i, p, min_x, min_y, wi, hi);
-    //     }
-    //     cudaDeviceSynchronize();
-    //     double t3 = CycleTimer::currentSeconds();
-    //     rp += t3 - t2;
-    //     rem -= r;
-    // }
     if (sceneName == SNOWFLAKES || sceneName == SNOWFLAKES_SINGLE_FRAME) {
         renderSnowflakes();
     }
@@ -772,13 +685,4 @@ CudaRenderer::render() {
     }
 
     cudaDeviceSynchronize();
-    // printf("time spent in fillDeps: %.3fms\n", 1000.f * fd);
-    // printf("time spent in getIdxs: %.3f ms\n", 1000.f * gi);
-    // printf("time spent in updateDeps: %.3f ms\n", 1000.f * ud);
-    // printf("time spent in renderPixels: %.3f ms\n", 1000.f * rp);
-    // printf("time spent in thrust: %.3f ms\n", 1000.f * th);
-    // cudaFree(deps);
-    // cudaFree(can_render);
-    // cudaFree(idxs);
-    // cudaFree(prefix);
 }
