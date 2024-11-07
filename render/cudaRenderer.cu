@@ -19,9 +19,10 @@
 #include <thrust/functional.h>
 #include <thrust/execution_policy.h>
 #include "cycleTimer.h"
+#include "exclusiveScan.cu_inl"
 
 #define sq(x) (x) * (x)
-#define CHUNK 16
+#define CHUNK 100
 
 ////////////////////////////////////////////////////////////////////////////////////////
 // Putting all the cuda kernels here
@@ -411,20 +412,21 @@ __global__ void renderPixelsSnowflake(int ci, float3 p, int min_x, int min_y, in
     shadePixelSnowflake(ci, center, p, image_ptr);
 }
 
-__global__ void renderPixels(int ci) {
+__global__ void renderPixels(int ci, int min_x, int min_y, int wi, int hi) {
     int pi = blockIdx.x * blockDim.x + threadIdx.x;
+    if (pi >= wi * hi)
+        return;
+    int x = min_x + pi % wi;
+    int y = min_y + pi / wi;
     int w = cuConstRendererParams.imageWidth;  // reading global memory bad?
     int h = cuConstRendererParams.imageHeight;
-    if (pi >= w * h)
-        return;
-    int x = pi % w;
-    int y = pi / w;
     float inv_w = 1.f / w;
     float inv_h = 1.f / h;
     float4 rgba = *(float4*)(&cuConstRendererParams.imageData[4*(y*w+x)]);
     float2 center = make_float2(inv_w * (static_cast<float>(x) + 0.5f),
                                 inv_h * (static_cast<float>(y) + 0.5f));
-
+    int test[3] = {0, 1, 2};
+    printf("%i!!!!\n", thrust::reduce(test, test + 3));
     for (int i = ci; i < min(ci + CHUNK, cuConstRendererParams.numCircles); i++) {
         float3 p = *(float3*)(&cuConstRendererParams.position[3*i]);
         float r = cuConstRendererParams.radius[i];  // pass these in as arguments?
@@ -661,7 +663,23 @@ void CudaRenderer::renderCircles() {
     int h = image->height;
     int b = (w*h+TPB-1)/TPB;
     for (int i = 0; i < numCircles; i += CHUNK) {
-        renderPixels<<<b, TPB>>>(i);
+        int min_x = w;
+        int max_x = 0;
+        int min_y = h;
+        int max_y = 0;
+        for (int j = i; j < min(numCircles, i + CHUNK); j++) {
+            float3 p = *(float3*)(&position[3*j]);
+            float rad = radius[j];
+            min_x = min(min_x, CLAMP(static_cast<int>(w * (p.x - rad)), 0, w));
+            max_x = max(max_x, CLAMP(static_cast<int>(w * (p.x + rad)) + 1, 0, w));
+            min_y = min(min_y, CLAMP(static_cast<int>(h * (p.y - rad)), 0, h));
+            max_y = max(max_y, CLAMP(static_cast<int>(h * (p.y + rad)) + 1, 0, h));
+        }
+        int wi = max_x - min_x;
+        int hi = max_y - min_y;
+        printf("(%i, %i) -> (%i, %i)\n", min_x, min_y, max_x, max_y);
+        b = (wi*hi+TPB-1)/TPB;
+        renderPixels<<<b, TPB>>>(i, min_x, min_y, wi, hi);
     }
 }
 
