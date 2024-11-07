@@ -27,6 +27,9 @@ private:
     float* cudaDeviceRadius;
     float* cudaDeviceImageData;
 
+    const int TPB = 256;
+    const int SQRT_TPB = 16;
+
 public:
 
     CudaRenderer();
@@ -35,8 +38,6 @@ public:
     const Image* getImage();
 
     void setup();
-
-    void initializeArrays();
 
     void loadScene(SceneName name);
 
