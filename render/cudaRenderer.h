@@ -34,6 +34,7 @@ private:
     int* chunks;  // if needed declare this global in .cu
     int* prefix;
     int* idxs;
+    int* keys;
 
 public:
 

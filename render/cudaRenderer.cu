@@ -515,6 +515,7 @@ CudaRenderer::~CudaRenderer() {
         cudaFree(chunks);
         cudaFree(prefix);
         cudaFree(idxs);
+        cudaFree(keys);
     }
 }
 
@@ -630,6 +631,10 @@ CudaRenderer::setup() {
     cudaMalloc(&chunks, wc * hc * numCircles * sizeof(int));
     cudaMalloc(&prefix, wc * hc * numCircles * sizeof(int));
     cudaMalloc(&idxs, wc * hc * numCircles * sizeof(int));
+    cudaMalloc(&keys, wc * hc * numCircles * sizeof(int));
+    for (int i = 0; i < wc * hc; i++) {
+        cudaMemset(keys + i * numCircles, i & 1, numCircles * sizeof(int));
+    }
 }
 
 // allocOutputImage --
@@ -707,16 +712,23 @@ void CudaRenderer::renderSnowflakes() {
 void CudaRenderer::renderCircles() {
     dim3 block_dim(SQRT_TPB, SQRT_TPB);
     dim3 chunk_grid_dim((wc * hc + SQRT_TPB - 1) / SQRT_TPB, (numCircles + SQRT_TPB - 1) / SQRT_TPB);
-    fillChunks<<<chunk_grid_dim, block_dim>>>(wc, hc, numCircles, chunks);
 
-    int* chunks_ptr = chunks;
-    int* prefix_ptr = prefix;
-    for (int i = 0; i < wc * hc; i++) {
-        thrust::exclusive_scan(thrust::device, chunks_ptr, chunks_ptr + numCircles, prefix_ptr);
-        chunks_ptr += numCircles;
-        prefix_ptr += numCircles;
-    }
+    double t0 = CycleTimer::currentSeconds();
+    fillChunks<<<chunk_grid_dim, block_dim>>>(wc, hc, numCircles, chunks);
+    cudaDeviceSynchronize();
+    double t1 = CycleTimer::currentSeconds();
+    printf("%.3f ms in fillChunks\n", 1000.f*(t1-t0));
+
+    // TODO: rename chunks to bits
+    thrust::exclusive_scan_by_key(thrust::device, keys, keys + wc * hc * numCircles, chunks, prefix);
+    cudaDeviceSynchronize();
+    double t2 = CycleTimer::currentSeconds();
+    printf("%.3f ms in thrust\n", 1000.f*(t2-t1));
+
     getIdxs<<<chunk_grid_dim, block_dim>>>(wc, hc, numCircles, chunks, prefix, idxs);
+    cudaDeviceSynchronize();
+    double t3 = CycleTimer::currentSeconds();
+    printf("%.3f ms in getIdxs\n", 1000.f*(t3-t2));
     // cudaDeviceSynchronize();
     // int* debug = new int[wc*hc*numCircles];
     // cudaMemcpy(debug, idxs, wc*hc*numCircles*sizeof(int), cudaMemcpyDeviceToHost);
@@ -732,8 +744,12 @@ void CudaRenderer::renderCircles() {
     // printf("end debug\n");
     // free(debug);
 
+    // TODO: use 2d instead?
     dim3 pixel_grid_dim((image->width * image->height + TPB - 1) / TPB);
     renderPixel<<<pixel_grid_dim, TPB>>>(wc, numCircles, idxs);
+    cudaDeviceSynchronize();
+    double t4 = CycleTimer::currentSeconds();
+    printf("%.3f ms in renderPixel\n", 1000.f*(t4-t3));
     cudaDeviceSynchronize();
 }
 
