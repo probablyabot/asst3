@@ -392,8 +392,8 @@ shadePixel(int circleIndex, float4& cur_rgba) {
 }
 
 __global__ void fillChunks(int* chunks) {
-    int chunk = blockIdx.x * blockDim.x + threadIdx.x;
-    int circle = blockIdx.y * blockDim.y + threadIdx.y;
+    int circle = blockIdx.x * blockDim.x + threadIdx.x;
+    int chunk = blockIdx.y * blockDim.y + threadIdx.y;
     int nc = cuConstRendererParams.numCircles;
     if (chunk >= cuda_wc * cuda_hc || circle >= nc)
         return;
@@ -408,20 +408,22 @@ __global__ void fillChunks(int* chunks) {
     float min_y = inv_h * (static_cast<float>(y) + 0.5f);
     float max_x = inv_w * (static_cast<float>(x + cuda_c - 1) + 0.5f);
     float max_y = inv_h * (static_cast<float>(y + cuda_c - 1) + 0.5f);
-    if (circleInBoxConservative(p.x, p.y, r, min_x, max_x, max_y, min_y) && circleInBox(p.x, p.y, r, min_x, max_x, max_y, min_y))
+    if (circleInBoxConservative(p.x, p.y, r, min_x, max_x, max_y, min_y) &&
+        circleInBox(p.x, p.y, r, min_x, max_x, max_y, min_y))
         chunks[chunk*nc+circle] = 1;
 }
 
 // TODO: fuse w fillChunks?
 __global__ void getIdxs(int* chunks, int* prefix, int* idxs) {
-    int chunk = blockIdx.x * blockDim.x + threadIdx.x;
-    int circle = blockIdx.y * blockDim.y + threadIdx.y;
+    int circle = blockIdx.x * blockDim.x + threadIdx.x;
+    int chunk = blockIdx.y * blockDim.y + threadIdx.y;
     int nc = cuConstRendererParams.numCircles;
-    if (chunk < cuda_wc * cuda_hc && circle < nc) {
-        int i = chunk * nc + circle;
-        if (chunks[i])
-            idxs[chunk*nc+prefix[i]] = circle;
-    }
+    if (chunk >= cuda_wc * cuda_hc || circle >= nc)
+        return;
+
+    int i = chunk * nc + circle;
+    if (chunks[i])
+        idxs[chunk*nc+prefix[i]] = circle;
 }
 
 __global__ void renderPixelsSnowflakes(int* idxs) {
@@ -639,9 +641,10 @@ CudaRenderer::setup() {
 
     cudaMemcpyToSymbol(cuConstColorRamp, lookupTable, sizeof(float) * 3 * COLOR_MAP_SIZE);
 
-    c = 1024;
+    // TODO: hardcode rgb
+    c = 64;
     if (numCircles >= 2000000) {
-        c = 256;
+        c = 64;
     }
     else if (numCircles >= 1000000) {
         c = 64;
@@ -725,30 +728,30 @@ CudaRenderer::render() {
     cudaCheckError(cudaMemset(chunks, 0, wc * hc * numCircles * sizeof(int)));
     cudaCheckError(cudaMemset(idxs, -1, wc * hc * numCircles * sizeof(int)));
     dim3 block_dim(SQRT_TPB, SQRT_TPB);
-    dim3 chunk_grid_dim((wc * hc + SQRT_TPB - 1) / SQRT_TPB, (numCircles + SQRT_TPB - 1) / SQRT_TPB);
+    dim3 chunk_grid_dim((numCircles + SQRT_TPB - 1) / SQRT_TPB, (wc * hc + SQRT_TPB - 1) / SQRT_TPB);
 
-    double t0 = CycleTimer::currentSeconds();
+    // double t0 = CycleTimer::currentSeconds();
     fillChunks<<<chunk_grid_dim, block_dim>>>(chunks);
-    cudaDeviceSynchronize();
-    double t1 = CycleTimer::currentSeconds();
-    printf("%.3f ms in fillChunks\n", 1000.f*(t1-t0));
+    // cudaCheckError(cudaDeviceSynchronize());
+    // double t1 = CycleTimer::currentSeconds();
+    // printf("%.3f ms in fillChunks\n", 1000.f*(t1-t0));
 
     // TODO: rename chunks to bits
     thrust::exclusive_scan_by_key(thrust::device, keys, keys + wc * hc * numCircles, chunks, prefix);
-    cudaCheckError(cudaDeviceSynchronize());
-    double t2 = CycleTimer::currentSeconds();
-    printf("%.3f ms in thrust\n", 1000.f*(t2-t1));
+    // cudaCheckError(cudaDeviceSynchronize());
+    // double t2 = CycleTimer::currentSeconds();
+    // printf("%.3f ms in thrust\n", 1000.f*(t2-t1));
 
     getIdxs<<<chunk_grid_dim, block_dim>>>(chunks, prefix, idxs);
-    cudaCheckError(cudaDeviceSynchronize());
-    double t3 = CycleTimer::currentSeconds();
-    printf("%.3f ms in getIdxs\n", 1000.f*(t3-t2));
+    // cudaCheckError(cudaDeviceSynchronize());
+    // double t3 = CycleTimer::currentSeconds();
+    // printf("%.3f ms in getIdxs\n", 1000.f*(t3-t2));
     // cudaDeviceSynchronize();
     // int* debug = new int[wc*hc*numCircles];
     // cudaMemcpy(debug, idxs, wc*hc*numCircles*sizeof(int), cudaMemcpyDeviceToHost);
-    // for (int i = 4; i < wc * hc; i += c) {
+    // for (int i = 0; i < wc * hc; i += wc) {
     //     printf("%i: ", i);
-    //     for (int j = 0; j < numCircles; j++) {
+    //     for (int j = 0; j < 20; j++) {
     //         if (debug[i*numCircles+j] == -1)
     //             break;
     //         printf("%i ", debug[i*numCircles+j]);
@@ -767,8 +770,9 @@ CudaRenderer::render() {
     else {
         renderPixel<<<pixel_grid_dim, TPB>>>(idxs);
     }
+    // cudaCheckError(cudaDeviceSynchronize());
+    // double t4 = CycleTimer::currentSeconds();
+    // printf("%.3f ms in renderPixel\n", 1000.f*(t4-t3));
     cudaCheckError(cudaDeviceSynchronize());
-    double t4 = CycleTimer::currentSeconds();
-    printf("%.3f ms in renderPixel\n", 1000.f*(t4-t3));
-    cudaCheckError(cudaDeviceSynchronize());
+    // TODO: fix micro2M
 }
