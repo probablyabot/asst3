@@ -28,10 +28,11 @@ private:
     float* cudaDeviceImageData;
 
     const int TPB = 256;
-    const int SQRT_TPB = 16;
+    const int SQRT_TPB = 16;  // TODO: play with this
+    int c;
     int wc;
     int hc;
-    int* chunks;  // if needed declare this global in .cu
+    int* chunks;  // how to optimize this stuff
     int* prefix;
     int* idxs;
     int* keys;
