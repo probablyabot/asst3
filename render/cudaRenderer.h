@@ -29,6 +29,11 @@ private:
 
     const int TPB = 256;
     const int SQRT_TPB = 16;
+    int wc;
+    int hc;
+    int** chunks;  // if needed declare this global in .cu
+    int** prefix;
+    int** idxs;
 
 public:
 

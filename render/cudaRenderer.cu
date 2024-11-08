@@ -14,15 +14,13 @@
 #include "sceneLoader.h"
 #include "util.h"
 
-#include <thrust/reduce.h>
-#include <thrust/transform.h>
-#include <thrust/functional.h>
+#include <thrust/scan.h>
 #include <thrust/execution_policy.h>
 #include "cycleTimer.h"
 #include "exclusiveScan.cu_inl"
 
 #define sq(x) (x) * (x)
-#define CHUNK 100
+#define CHUNK 32
 
 ////////////////////////////////////////////////////////////////////////////////////////
 // Putting all the cuda kernels here
@@ -65,6 +63,7 @@ __constant__ float  cuConstColorRamp[COLOR_MAP_SIZE][3];
 // file simpler and to seperate code that should not be modified
 #include "noiseCuda.cu_inl"
 #include "lookupColor.cu_inl"
+#include "circleBoxTest.cu_inl"
 
 
 // kernelClearImageSnowflake -- (CUDA device code)
@@ -412,12 +411,12 @@ __global__ void renderPixelsSnowflake(int ci, float3 p, int min_x, int min_y, in
     shadePixelSnowflake(ci, center, p, image_ptr);
 }
 
-__global__ void renderPixels(int ci, int min_x, int min_y, int wi, int hi) {
-    int pi = blockIdx.x * blockDim.x + threadIdx.x;
-    if (pi >= wi * hi)
+__global__ void renderPixel(int wc, int** idxs) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= cuConstRendererParams.imageWidth || y >= cuConstRendererParams.imageHeight)
         return;
-    int x = min_x + pi % wi;
-    int y = min_y + pi / wi;
+    int chunk = x / CHUNK * wc + y / CHUNK;
     int w = cuConstRendererParams.imageWidth;  // reading global memory bad?
     int h = cuConstRendererParams.imageHeight;
     float inv_w = 1.f / w;
@@ -425,15 +424,44 @@ __global__ void renderPixels(int ci, int min_x, int min_y, int wi, int hi) {
     float4 rgba = *(float4*)(&cuConstRendererParams.imageData[4*(y*w+x)]);
     float2 center = make_float2(inv_w * (static_cast<float>(x) + 0.5f),
                                 inv_h * (static_cast<float>(y) + 0.5f));
-    int test[3] = {0, 1, 2};
-    printf("%i!!!!\n", thrust::reduce(test, test + 3));
-    for (int i = ci; i < min(ci + CHUNK, cuConstRendererParams.numCircles); i++) {
+    for (int j = 0; idxs[chunk][j] != -1; j++) {
+        int i = idxs[chunk][j];
         float3 p = *(float3*)(&cuConstRendererParams.position[3*i]);
         float r = cuConstRendererParams.radius[i];  // pass these in as arguments?
         if (sq(p.x - center.x) + sq(p.y - center.y) <= sq(r))
             shadePixel(i, rgba);
     }
     *(float4*)(&cuConstRendererParams.imageData[4*(y*w+x)]) = rgba;
+}
+
+__global__ void fillChunks(int wc, int hc, int** chunks) {
+    int chunk = blockIdx.x * blockDim.x + threadIdx.x;
+    int circle = blockIdx.y * blockDim.y + threadIdx.y;
+    if (chunk >= wc * hc || circle >= cuConstRendererParams.numCircles)
+        return;
+    
+    float3 p = *(float3*)(&cuConstRendererParams.position[3*i]);
+    float r = cuConstRendererParams.radius[i];
+    int x = (chunk % wc) * CHUNK;
+    int y = (chunk / wc) * CHUNK;
+    float inv_w = 1.f / cuConstRendererParams.imageWidth;
+    float inv_h = 1.f / cuConstRendererParams.imageHeight;
+    float min_x = inv_w * (static_cast<float>(min_x) + 0.5f);
+    float min_y = inv_h * (static_cast<float>(min_y) + 0.5f);
+    float max_x = inv_w * (static_cast<float>(min_x + CHUNK - 1) + 0.5f);
+    float max_y = inv_h * (static_cast<float>(min_y + CHUNK - 1) + 0.5f);
+    if (circleInBoxConservative(p.x, p.y, r, min_x, max_x, max_y, min_y)) {
+        if (circleInBox(p.x, p.y, r, min_x, max_x, max_y, min_y))
+            chunks[chunk][circle] = 1;
+    }
+}
+
+// fuse w fillChunks?
+__global__ void getIdxs(int wc, int hc, int** chunks, int** prefix, int** idxs) {
+    int chunk = blockIdx.x * blockDim.x + threadIdx.x;
+    int circle = blockIdx.y * blockDim.y + threadIdx.y;
+    if (chunk < wc * hc && circle < cuConstRendererParams.numCircles && chunks[chunk][circle])
+        idxs[chunk][prefix[chunk][circle]] = circle;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -453,6 +481,11 @@ CudaRenderer::CudaRenderer() {
     cudaDeviceColor = NULL;
     cudaDeviceRadius = NULL;
     cudaDeviceImageData = NULL;
+
+    wc = 0;
+    hc = 0;
+    chunks = NULL;
+    idxs = NULL;
 }
 
 CudaRenderer::~CudaRenderer() {
@@ -474,6 +507,15 @@ CudaRenderer::~CudaRenderer() {
         cudaFree(cudaDeviceColor);
         cudaFree(cudaDeviceRadius);
         cudaFree(cudaDeviceImageData);
+    }
+
+    if (chunks) {
+        for (int i = 0; i < wc * hc; i++) {
+            cudaFree(chunks[i]);
+            cudaFree(idxs[i]);
+        }
+        cudaFree(chunks);
+        cudaFree(idxs);
     }
 }
 
@@ -584,6 +626,18 @@ CudaRenderer::setup() {
 
     cudaMemcpyToSymbol(cuConstColorRamp, lookupTable, sizeof(float) * 3 * COLOR_MAP_SIZE);
 
+    wc = (image->width + CHUNK - 1) / CHUNK;
+    hc = (image->height + CHUNK - 1) / CHUNK;
+    cudaMalloc(&chunks, wc * hc * sizeof(int*));
+    cudaMalloc(&idxs, wc * hc * sizeof(int*));
+    // TODO: parallelize this
+    for (int i = 0; i < wc * hc; i++) {
+        cudaMalloc(&chunks[i], numCircles * sizeof(int));
+        cudaMemset(chunks[i], 0, numCircles * sizeof(int));
+        cudaMalloc(&prefix[i], numCircles * sizeof(int));
+        cudaMalloc(&idxs[i], numCircles * sizeof(int));
+        cudaMemset(idxs[i], -1, numCircles * sizeof(int));
+    }
 }
 
 // allocOutputImage --
@@ -659,28 +713,18 @@ void CudaRenderer::renderSnowflakes() {
 }
 
 void CudaRenderer::renderCircles() {
-    int w = image->width;
-    int h = image->height;
-    int b = (w*h+TPB-1)/TPB;
-    for (int i = 0; i < numCircles; i += CHUNK) {
-        int min_x = w;
-        int max_x = 0;
-        int min_y = h;
-        int max_y = 0;
-        for (int j = i; j < min(numCircles, i + CHUNK); j++) {
-            float3 p = *(float3*)(&position[3*j]);
-            float rad = radius[j];
-            min_x = min(min_x, CLAMP(static_cast<int>(w * (p.x - rad)), 0, w));
-            max_x = max(max_x, CLAMP(static_cast<int>(w * (p.x + rad)) + 1, 0, w));
-            min_y = min(min_y, CLAMP(static_cast<int>(h * (p.y - rad)), 0, h));
-            max_y = max(max_y, CLAMP(static_cast<int>(h * (p.y + rad)) + 1, 0, h));
+    dim3 block_dim(SQRT_TPB, SQRT_TPB);
+    dim3 chunk_grid_dim((wc * hc + SQRT_TPB - 1) / SQRT_TPB, (numCircles + SQRT_TPB - 1) / SQRT_TPB);
+    fillChunks<<<chunk_grid_dim, block_dim>>>(wc, hc, chunks);
+    for (int i = 0; i < wc; i++) {
+        for (int j = 0; j < hc; j++) {
+            thrust::exclusive_scan(thrust::device, chunks[i*wc+j], chunks[i*wc+j] + numCircles, idxs[i*wc+j]);
         }
-        int wi = max_x - min_x;
-        int hi = max_y - min_y;
-        printf("(%i, %i) -> (%i, %i)\n", min_x, min_y, max_x, max_y);
-        b = (wi*hi+TPB-1)/TPB;
-        renderPixels<<<b, TPB>>>(i, min_x, min_y, wi, hi);
     }
+    getIdxs<<<chunk_grid_dim, block_dim>>>(wc, hc, chunks, prefix, idxs);
+    dim3 pixel_grid_dim((image->width * image->height + SQRT_TPB - 1) / SQRT_TPB);
+    renderPixel<<<pixel_grid_dim, block_dim>>>(wc, idxs);
+    cudaDeviceSynchronize();
 }
 
 void
@@ -691,6 +735,4 @@ CudaRenderer::render() {
     else {
         renderCircles();
     }
-
-    cudaDeviceSynchronize();
 }
