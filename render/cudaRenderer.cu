@@ -642,15 +642,12 @@ CudaRenderer::setup() {
     cudaMemcpyToSymbol(cuConstColorRamp, lookupTable, sizeof(float) * 3 * COLOR_MAP_SIZE);
 
     // TODO: hardcode rgb
-    c = 64;
-    if (numCircles >= 2000000) {
+    c = 16;
+    if (numCircles >= 1000000) {
         c = 64;
     }
-    else if (numCircles >= 1000000) {
-        c = 64;
-    }
-    else if (numCircles >= 10000) {
-        c = 64;
+    else if (numCircles >= 100000) {
+        c = 16;
     }
     wc = (image->width + c - 1) / c;
     hc = (image->height + c - 1) / c;
@@ -774,5 +771,4 @@ CudaRenderer::render() {
     // double t4 = CycleTimer::currentSeconds();
     // printf("%.3f ms in renderPixel\n", 1000.f*(t4-t3));
     cudaCheckError(cudaDeviceSynchronize());
-    // TODO: fix micro2M
 }
