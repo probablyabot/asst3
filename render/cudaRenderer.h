@@ -27,8 +27,8 @@ private:
     float* cudaDeviceRadius;
     float* cudaDeviceImageData;
 
-    const int TPB = 256;
-    const int SQRT_TPB = 16;  // TODO: play with this
+    const int TPB = 1024;
+    const int SQRT_TPB = 32;  // TODO: play with this
     int c;
     int wc;
     int hc;

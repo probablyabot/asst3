@@ -391,12 +391,13 @@ shadePixel(int circleIndex, float4& cur_rgba) {
     cur_rgba.w = alpha + cur_rgba.w;
 }
 
+// TODO: get rid of all out of bounds checks for chunk
 __global__ void fillChunks(int* chunks) {
     int circle = blockIdx.x * blockDim.x + threadIdx.x;
-    int chunk = blockIdx.y * blockDim.y + threadIdx.y;
     int nc = cuConstRendererParams.numCircles;
-    if (chunk >= cuda_wc * cuda_hc || circle >= nc)
+    if (circle >= nc)
         return;
+    int chunk = blockIdx.y * blockDim.y + threadIdx.y;
     
     float3 p = *(float3*)(&cuConstRendererParams.position[3*circle]);
     float r = cuConstRendererParams.radius[circle];
@@ -406,8 +407,8 @@ __global__ void fillChunks(int* chunks) {
     float inv_h = 1.f / cuConstRendererParams.imageHeight;
     float min_x = inv_w * (static_cast<float>(x) + 0.5f);
     float min_y = inv_h * (static_cast<float>(y) + 0.5f);
-    float max_x = inv_w * (static_cast<float>(x + cuda_c - 1) + 0.5f);
-    float max_y = inv_h * (static_cast<float>(y + cuda_c - 1) + 0.5f);
+    float max_x = min(inv_w * (static_cast<float>(x + cuda_c - 1) + 0.5f), 1.f);
+    float max_y = min(inv_h * (static_cast<float>(y + cuda_c - 1) + 0.5f), 1.f);
     if (circleInBoxConservative(p.x, p.y, r, min_x, max_x, max_y, min_y) &&
         circleInBox(p.x, p.y, r, min_x, max_x, max_y, min_y))
         chunks[chunk*nc+circle] = 1;
@@ -416,11 +417,10 @@ __global__ void fillChunks(int* chunks) {
 // TODO: fuse w fillChunks?
 __global__ void getIdxs(int* chunks, int* prefix, int* idxs) {
     int circle = blockIdx.x * blockDim.x + threadIdx.x;
-    int chunk = blockIdx.y * blockDim.y + threadIdx.y;
     int nc = cuConstRendererParams.numCircles;
-    if (chunk >= cuda_wc * cuda_hc || circle >= nc)
+    if (circle >= nc)
         return;
-
+    int chunk = blockIdx.y * blockDim.y + threadIdx.y;
     int i = chunk * nc + circle;
     if (chunks[i])
         idxs[chunk*nc+prefix[i]] = circle;
@@ -430,12 +430,10 @@ __global__ void renderPixelsSnowflakes(int* idxs) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int w = cuConstRendererParams.imageWidth;
     int h = cuConstRendererParams.imageHeight;
-    if (i >= w * h)
-        return;
     int x = i % w;
     int y = i / w;
     int chunk = y / cuda_c * cuda_wc + x / cuda_c;
-    float4 rgba = *(float4*)(&cuConstRendererParams.imageData[4*(y*w+x)]);
+    float4 rgba = *(float4*)(&cuConstRendererParams.imageData[4*i]);
     float2 center = make_float2(1.f / w * (static_cast<float>(x) + 0.5f),
                                 1.f / h * (static_cast<float>(y) + 0.5f));
     int nc = cuConstRendererParams.numCircles;
@@ -449,19 +447,17 @@ __global__ void renderPixelsSnowflakes(int* idxs) {
         if (sq_dist <= sq(r))
             shadePixelSnowflake(circle, sqrt(sq_dist) / r, p.z, rgba);
     }
-    *(float4*)(&cuConstRendererParams.imageData[4*(y*w+x)]) = rgba;
+    *(float4*)(&cuConstRendererParams.imageData[4*i]) = rgba;
 }
 
 __global__ void renderPixel(int* idxs) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int w = cuConstRendererParams.imageWidth;
     int h = cuConstRendererParams.imageHeight;
-    if (i >= w * h)
-        return;
     int x = i % w;
     int y = i / w;
     int chunk = y / cuda_c * cuda_wc + x / cuda_c;
-    float4 rgba = *(float4*)(&cuConstRendererParams.imageData[4*(y*w+x)]);
+    float4 rgba = *(float4*)(&cuConstRendererParams.imageData[4*i]);
     float2 center = make_float2(1.f / w * (static_cast<float>(x) + 0.5f),
                                 1.f / h * (static_cast<float>(y) + 0.5f));
     int nc = cuConstRendererParams.numCircles;
@@ -476,7 +472,7 @@ __global__ void renderPixel(int* idxs) {
         if (sq(p.x - center.x) + sq(p.y - center.y) <= sq(r))
             shadePixel(circle, rgba);
     }
-    *(float4*)(&cuConstRendererParams.imageData[4*(y*w+x)]) = rgba;
+    *(float4*)(&cuConstRendererParams.imageData[4*i]) = rgba;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -636,17 +632,20 @@ CudaRenderer::setup() {
         {1.f, 1.f, 1.f},
         {.8f, .9f, 1.f},
         {.8f, .9f, 1.f},
-        {.8f, 0.8f, 1.f},
+        {.8f, .8f, 1.f},
     };
 
     cudaMemcpyToSymbol(cuConstColorRamp, lookupTable, sizeof(float) * 3 * COLOR_MAP_SIZE);
 
     // TODO: hardcode rgb
-    c = 16;
+    c = 64;
     if (numCircles >= 1000000) {
         c = 64;
     }
     else if (numCircles >= 100000) {
+        c = 64;
+    }
+    else if (numCircles <= 4) {
         c = 16;
     }
     wc = (image->width + c - 1) / c;
