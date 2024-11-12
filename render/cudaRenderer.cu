@@ -471,6 +471,8 @@ __global__ void renderPixel(int* idxs, int* chunks, int* prefix) {
                                 cuda_inv_h * (static_cast<float>(y) + 0.5f));
     int nc = cuConstRendererParams.numCircles;
     int chunk_circles = prefix[chunk*nc+nc-1] + chunks[chunk*nc+nc-1];
+    if (x == 0 && y == 0)
+        printf("%i circles in chunk\n", chunk_circles);
     int k = 3 - (chunk * nc + 3) % 4; // address alignment
     int j = 0;
     for (; j < k; j++) {
@@ -684,7 +686,7 @@ CudaRenderer::setup() {
     else if (numCircles >= 100000) {
         c = 64;
     }
-    else if (numCircles <= 4) {
+    else if (numCircles >= 10000) {
         c = 64;
     }
     wc = (image->width + c - 1) / c;
@@ -763,6 +765,21 @@ CudaRenderer::advanceAnimation() {
         kernelAdvanceFireWorks<<<gridDim, blockDim>>>(); 
     }
     cudaDeviceSynchronize();
+}
+
+__global__ dumb() {
+    
+}
+
+void dumbRender() {
+    for (int i = 0; i < numCircles; i++) {
+        float3 p = position[i];
+        float r = radius[i];
+        int min_x = image->width * CLAMP(p.x - r, 0, 1);
+        int min_y = image->height * CLAMP(p.y - r, 0, 1);
+        int max_x = image->width * CLAMP(p.x + r, 0, 1);
+        int max_y = image->height * CLAMP(p.y + r, 0, 1);
+    }
 }
 
 void
