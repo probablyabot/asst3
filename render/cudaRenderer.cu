@@ -439,7 +439,19 @@ __global__ void renderPixelsSnowflakes(int* idxs, int* chunks, int* prefix) {
     float2 center = make_float2(cuda_inv_w * (static_cast<float>(x) + 0.5f),
                                 cuda_inv_h * (static_cast<float>(y) + 0.5f));
     int nc = cuConstRendererParams.numCircles;
-    for (int j = 0; j < prefix[chunk*nc+nc-1] + chunks[chunk*nc+nc-1]; j++) {
+    int chunk_circles = prefix[chunk*nc+nc-1] + chunks[chunk*nc+nc-1];
+    int chunk_circle_floor = chunk_circles - chunk_circles % 4;
+    for (int j = 0; j < chunk_circle_floor; j += 4) {
+        int4 circles = *(int4*)(&idxs[chunk*nc+j]);
+        for (int circle : {circles.x, circles.y, circles.z, circles.w}) {
+            float3 p = *(float3*)(&cuConstRendererParams.position[3*circle]);
+            float r = cuConstRendererParams.radius[circle];
+            float sq_dist = sq(p.x - center.x) + sq(p.y - center.y);
+            if (sq_dist <= sq(r))
+                shadePixelSnowflake(circle, sqrt(sq_dist) / r, p.z, rgba);
+        }
+    }
+    for (int j = chunk_circle_floor; j < chunk_circles; j++) {
         int circle = idxs[chunk*nc+j];
         float3 p = *(float3*)(&cuConstRendererParams.position[3*circle]);
         float r = cuConstRendererParams.radius[circle];
@@ -459,7 +471,18 @@ __global__ void renderPixel(int* idxs, int* chunks, int* prefix) {
     float2 center = make_float2(cuda_inv_w * (static_cast<float>(x) + 0.5f),
                                 cuda_inv_h * (static_cast<float>(y) + 0.5f));
     int nc = cuConstRendererParams.numCircles;
-    for (int j = 0; j < prefix[chunk*nc+nc-1] + chunks[chunk*nc+nc-1]; j++) {
+    int chunk_circles = prefix[chunk*nc+nc-1] + chunks[chunk*nc+nc-1];
+    int chunk_circle_floor = chunk_circles - chunk_circles % 4;
+    for (int j = 0; j < chunk_circle_floor; j += 4) {
+        int4 circles = *(int4*)(&idxs[chunk*nc+j]);
+        for (int circle : {circles.x, circles.y, circles.z, circles.w}) {
+            float3 p = *(float3*)(&cuConstRendererParams.position[3*circle]);
+            float r = cuConstRendererParams.radius[circle];
+            if (sq(p.x - center.x) + sq(p.y - center.y) <= sq(r))
+                shadePixel(circle, rgba);
+        }
+    }
+    for (int j = chunk_circle_floor; j < chunk_circles; j++) {
         int circle = idxs[chunk*nc+j];
         float3 p = *(float3*)(&cuConstRendererParams.position[3*circle]);
         float r = cuConstRendererParams.radius[circle];
@@ -743,7 +766,7 @@ CudaRenderer::render() {
     dim3 chunk_grid_dim((numCircles + SQRT_TPB - 1) / SQRT_TPB, wc * hc / SQRT_TPB);
     dim3 pixel_grid_dim(image->width / SQRT_TPB, image->height / SQRT_TPB);
     // TODO: get rid of checkError
-    if (numCircles < 5) {
+    if (numCircles < 4) {
         renderPixelNaive<<<pixel_grid_dim, block_dim>>>();
         return;
     }
