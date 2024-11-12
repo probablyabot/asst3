@@ -19,6 +19,8 @@
 #include "cycleTimer.h"
 
 #define sq(x) (x) * (x)
+#define TPB 1024
+#define SQRT_TPB 32  // TODO: play with this
 
 #define DEBUG
 
@@ -41,9 +43,6 @@ inline void cudaAssert(cudaError_t code, const char *file, int line, bool abort=
 __constant__ int cuda_c;
 __constant__ int cuda_wc;
 __constant__ int cuda_hc;
-__constant__ int cuda_log_c;
-__constant__ int cuda_log_wc;
-__constant__ int cuda_log_w;
 __constant__ float cuda_inv_w;
 __constant__ float cuda_inv_h;
 
@@ -405,8 +404,8 @@ __global__ void fillChunks(int* chunks) {
     
     float3 p = *(float3*)(&cuConstRendererParams.position[3*circle]);
     float r = cuConstRendererParams.radius[circle];
-    int x = (chunk & (cuda_wc - 1)) << cuda_log_c;
-    int y = (chunk >> cuda_log_wc) << cuda_log_c;
+    int x = (chunk % cuda_wc) * cuda_c;
+    int y = (chunk / cuda_wc) * cuda_c;
     float min_x = cuda_inv_w * (static_cast<float>(x) + 0.5f);
     float min_y = cuda_inv_h * (static_cast<float>(y) + 0.5f);
     float max_x = cuda_inv_w * (static_cast<float>(x + cuda_c - 1) + 0.5f);
@@ -434,7 +433,7 @@ __global__ void getIdxs(int* chunks, int* prefix, int* idxs) {
 __global__ void renderPixelsSnowflakes(int* idxs, int* chunks, int* prefix) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
-    int chunk = ((y >> cuda_log_c) << cuda_log_wc) + (x >> cuda_log_c);
+    int chunk = y / cuda_c * cuda_wc + x / cuda_c;
     int i = y * cuConstRendererParams.imageWidth + x;
     float4 rgba = *(float4*)(&cuConstRendererParams.imageData[4*i]);
     float2 center = make_float2(cuda_inv_w * (static_cast<float>(x) + 0.5f),
@@ -454,7 +453,7 @@ __global__ void renderPixelsSnowflakes(int* idxs, int* chunks, int* prefix) {
 __global__ void renderPixel(int* idxs, int* chunks, int* prefix) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
-    int chunk = ((y >> cuda_log_c) << cuda_log_wc) + (x >> cuda_log_c);
+    int chunk = y / cuda_c * cuda_wc + x / cuda_c;
     int i = y * cuConstRendererParams.imageWidth + x;
     float4 rgba = *(float4*)(&cuConstRendererParams.imageData[4*i]);
     float2 center = make_float2(cuda_inv_w * (static_cast<float>(x) + 0.5f),
@@ -510,6 +509,7 @@ CudaRenderer::CudaRenderer() {
     chunks = NULL;
     prefix = NULL;
     idxs = NULL;
+    frame = 0;
 }
 
 CudaRenderer::~CudaRenderer() {
@@ -647,9 +647,8 @@ CudaRenderer::setup() {
 
     cudaMemcpyToSymbol(cuConstColorRamp, lookupTable, sizeof(float) * 3 * COLOR_MAP_SIZE);
 
-    // TODO: hardcode rgb
     c = 64;
-    if (numCircles >= 1000000) {
+    if (numCircles >= 2000000) {
         c = 64;
     }
     else if (numCircles >= 100000) {
@@ -663,21 +662,6 @@ CudaRenderer::setup() {
     cudaMemcpyToSymbol(cuda_c, &c, sizeof(int));
     cudaMemcpyToSymbol(cuda_wc, &wc, sizeof(int));
     cudaMemcpyToSymbol(cuda_hc, &hc, sizeof(int));
-    int lc = 0;
-    for (int i = 1; i < c; i <<= 1) {
-        lc += 1;
-    }
-    cudaMemcpyToSymbol(cuda_log_c, &lc, sizeof(int));
-    int lwc = 0;
-    for (int i = 1; i < wc; i <<= 1) {
-        lwc += 1;
-    }
-    cudaMemcpyToSymbol(cuda_log_wc, &lwc, sizeof(int));
-    int lw = 0;
-    for (int i = 1; i < image->width; i <<= 1) {
-        lw += 1;
-    }
-    cudaMemcpyToSymbol(cuda_log_w, &lw, sizeof(int));
 
     float inv_w = 1.f / image->width;
     float inv_h = 1.f / image->height;
@@ -691,6 +675,8 @@ CudaRenderer::setup() {
     for (int i = 0; i < wc * hc; i++) {
         cudaCheckError(cudaMemset(idxs + i * numCircles, i & 1, numCircles * sizeof(int)));
     }
+
+    frame = 0;
 }
 
 // allocOutputImage --
@@ -751,10 +737,12 @@ CudaRenderer::advanceAnimation() {
 
 void
 CudaRenderer::render() {
-    // TODO: get rid of checkError
+    if (frame)
+        return;
     dim3 block_dim(SQRT_TPB, SQRT_TPB);
     dim3 chunk_grid_dim((numCircles + SQRT_TPB - 1) / SQRT_TPB, wc * hc / SQRT_TPB);
     dim3 pixel_grid_dim(image->width / SQRT_TPB, image->height / SQRT_TPB);
+    // TODO: get rid of checkError
     if (numCircles < 5) {
         renderPixelNaive<<<pixel_grid_dim, block_dim>>>();
         return;
@@ -767,7 +755,7 @@ CudaRenderer::render() {
     // printf("%.3f ms in fillChunks\n", 1000.f*(t1-t0));
 
     // TODO: rename chunks to bits
-    // TODO: smarter way to call thrust besides scam by key?
+    // TODO: smarter way to call thrust besides scan by key?
     thrust::exclusive_scan_by_key(thrust::device, idxs, idxs + wc * hc * numCircles, chunks, prefix);
     // cudaCheckError(cudaDeviceSynchronize());
     // double t2 = CycleTimer::currentSeconds();
@@ -802,4 +790,5 @@ CudaRenderer::render() {
     // cudaCheckError(cudaDeviceSynchronize());
     // double t4 = CycleTimer::currentSeconds();
     // printf("%.3f ms in renderPixel\n", 1000.f*(t4-t3));
+    frame++;
 }
