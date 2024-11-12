@@ -415,7 +415,6 @@ __global__ void fillChunks(int* chunks) {
     if (circleInBoxConservative(p.x, p.y, r, min_x, max_x, max_y, min_y) &&
         circleInBox(p.x, p.y, r, min_x, max_x, max_y, min_y))
         chunks[chunk*nc+circle] = 1;
-    // TODO: optimize i/o by writing once per block? __syncthreads
 }
 
 // TODO: fuse w fillChunks? or do a single global read/write by accumulating per block
@@ -472,8 +471,16 @@ __global__ void renderPixel(int* idxs, int* chunks, int* prefix) {
                                 cuda_inv_h * (static_cast<float>(y) + 0.5f));
     int nc = cuConstRendererParams.numCircles;
     int chunk_circles = prefix[chunk*nc+nc-1] + chunks[chunk*nc+nc-1];
-    int chunk_circle_floor = chunk_circles - chunk_circles % 4;
-    for (int j = 0; j < chunk_circle_floor; j += 4) {
+    int k = 3 - (chunk * nc + 3) % 4; // address alignment
+    int j = 0;
+    for (; j < k; j++) {
+        int circle = idxs[chunk*nc+j];
+        float3 p = *(float3*)(&cuConstRendererParams.position[3*circle]);
+        float r = cuConstRendererParams.radius[circle];
+        if (sq(p.x - center.x) + sq(p.y - center.y) <= sq(r))
+            shadePixel(circle, rgba);
+    }
+    for (; j + 4 <= chunk_circles; j += 4) {
         int4 circles = *(int4*)(&idxs[chunk*nc+j]);
         for (int circle : {circles.x, circles.y, circles.z, circles.w}) {
             float3 p = *(float3*)(&cuConstRendererParams.position[3*circle]);
@@ -482,7 +489,7 @@ __global__ void renderPixel(int* idxs, int* chunks, int* prefix) {
                 shadePixel(circle, rgba);
         }
     }
-    for (int j = chunk_circle_floor; j < chunk_circles; j++) {
+    for (; j < chunk_circles; j++) {
         int circle = idxs[chunk*nc+j];
         float3 p = *(float3*)(&cuConstRendererParams.position[3*circle]);
         float r = cuConstRendererParams.radius[circle];
@@ -762,6 +769,7 @@ void
 CudaRenderer::render() {
     if (frame)
         return;
+    frame++;
     dim3 block_dim(SQRT_TPB, SQRT_TPB);
     dim3 chunk_grid_dim((numCircles + SQRT_TPB - 1) / SQRT_TPB, wc * hc / SQRT_TPB);
     dim3 pixel_grid_dim(image->width / SQRT_TPB, image->height / SQRT_TPB);
@@ -790,10 +798,10 @@ CudaRenderer::render() {
     // printf("%.3f ms in getIdxs\n", 1000.f*(t3-t2));
     // cudaDeviceSynchronize();
     // int* debug = new int[wc*hc*numCircles];
-    // cudaMemcpy(debug, chunks, wc*hc*numCircles*sizeof(int), cudaMemcpyDeviceToHost);
-    // for (int i = 4; i < wc * hc; i += wc) {
+    // cudaMemcpy(debug, idxs, wc*hc*numCircles*sizeof(int), cudaMemcpyDeviceToHost);
+    // for (int i = 0; i < wc * hc; i += wc) {
     //     printf("%i: ", i);
-    //     for (int j = 0; j < 3; j++) {
+    //     for (int j = 0; j < 10; j++) {
     //         if (debug[i*numCircles+j] == -1)
     //             break;
     //         printf("%i ", debug[i*numCircles+j]);
@@ -813,5 +821,4 @@ CudaRenderer::render() {
     // cudaCheckError(cudaDeviceSynchronize());
     // double t4 = CycleTimer::currentSeconds();
     // printf("%.3f ms in renderPixel\n", 1000.f*(t4-t3));
-    frame++;
 }
