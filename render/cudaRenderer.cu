@@ -453,7 +453,7 @@ __global__ void renderPixelsSnowflakes(int* idxs) {
     *(float4*)(&cuConstRendererParams.imageData[4*i]) = rgba;
 }
 
-__global__ void renderPixel(int* idxs) {
+__global__ void renderPixel(int* idxs, int* chunks, int* prefix) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int w = cuConstRendererParams.imageWidth;
     int x = i & (w - 1);
@@ -463,10 +463,8 @@ __global__ void renderPixel(int* idxs) {
     float2 center = make_float2(cuda_inv_w * (static_cast<float>(x) + 0.5f),
                                 cuda_inv_h * (static_cast<float>(y) + 0.5f));
     int nc = cuConstRendererParams.numCircles;
-    for (int j = chunk * nc; j < chunk * nc + nc; j++) {
-        int circle = idxs[j];
-        if (circle == -1)
-            break;
+    for (int j = 0; j < prefix[chunk*nc+nc-1] + chunks[chunk*nc+nc-1]; j++) {
+        int circle = idxs[chunk*nc+j];
         float3 p = *(float3*)(&cuConstRendererParams.position[3*circle]);
         float r = cuConstRendererParams.radius[circle];
         if (sq(p.x - center.x) + sq(p.y - center.y) <= sq(r))
@@ -639,12 +637,12 @@ CudaRenderer::setup() {
     cudaMemcpyToSymbol(cuConstColorRamp, lookupTable, sizeof(float) * 3 * COLOR_MAP_SIZE);
 
     // TODO: hardcode rgb
-    c = 64;
+    c = 32;
     if (numCircles >= 1000000) {
         c = 64;
     }
     else if (numCircles >= 100000) {
-        c = 64;
+        c = 32;
     }
     else if (numCircles <= 4) {
         c = 32;
@@ -744,7 +742,6 @@ void
 CudaRenderer::render() {
     // TODO: get rid of checkError
     cudaCheckError(cudaMemset(chunks, 0, wc * hc * numCircles * sizeof(int)));
-    cudaCheckError(cudaMemset(idxs, -1, wc * hc * numCircles * sizeof(int)));
     dim3 block_dim(SQRT_TPB, SQRT_TPB);
     dim3 chunk_grid_dim((numCircles + SQRT_TPB - 1) / SQRT_TPB, (wc * hc + SQRT_TPB - 1) / SQRT_TPB);
 
@@ -796,7 +793,7 @@ CudaRenderer::render() {
     }
     else {
         // TODO: maybe launch 1 per chunk? or 1 per 2x2 group of pixels?
-        renderPixel<<<pixel_grid_dim, TPB>>>(idxs);
+        renderPixel<<<pixel_grid_dim, TPB>>>(idxs, chunks, prefix);
     }
     cudaCheckError(cudaDeviceSynchronize());
     double t4 = CycleTimer::currentSeconds();
