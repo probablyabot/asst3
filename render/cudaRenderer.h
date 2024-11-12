@@ -35,7 +35,6 @@ private:
     int* chunks;  // how to optimize this stuff
     int* prefix;
     int* idxs;
-    int* keys;
 
 public:
 
