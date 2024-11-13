@@ -405,14 +405,12 @@ __global__ void fillChunks(int* chunks) {
     float3 p = *(float3*)(&cuConstRendererParams.position[3*circle]);
     float r = cuConstRendererParams.radius[circle];
     float4 bbox = cuda_bboxes[chunk];
-    // TODO: write better versions of these (maybe use bbox instead of circle?)
-    // or think more abt geo
+    // TODO: write better versions of these (maybe use bbox instead of circle?) or think more abt geo
     if (circleInBoxConservative(p.x, p.y, r, bbox.x, bbox.z, bbox.w, bbox.y) &&
         circleInBox(p.x, p.y, r, bbox.x, bbox.z, bbox.w, bbox.y))
         chunks[chunk*nc+circle] = 1;
 }
 
-// TODO: fuse w fillChunks? or do a single global read/write by accumulating per block
 __global__ void getIdxs(int* chunks, int* prefix, int* idxs) {
     int circle = blockIdx.x * blockDim.x + threadIdx.x;
     int chunk = blockIdx.y * blockDim.y + threadIdx.y;
@@ -492,25 +490,6 @@ __global__ void renderPixel(int* idxs, int* chunks, int* prefix) {
             if (sq(p.x - center.x) + sq(p.y - center.y) <= sq(r))
                 shadePixel(circle, rgba);
         }
-    }
-    *(float4*)(&cuConstRendererParams.imageData[4*i]) = rgba;
-}
-
-__global__ void renderPixelNaive() {
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
-    int w = cuConstRendererParams.imageWidth;
-    if (x >= w || y >= cuConstRendererParams.imageHeight)
-        return;
-    int i = y * w + x;
-    float4 rgba = *(float4*)(&cuConstRendererParams.imageData[4*i]);
-    float2 center = make_float2(cuda_inv_w * (static_cast<float>(x) + 0.5f),
-                                cuda_inv_h * (static_cast<float>(y) + 0.5f));
-    for (int j = 0; j < cuConstRendererParams.numCircles; j++) {
-        float3 p = *(float3*)(&cuConstRendererParams.position[3*j]);
-        float r = cuConstRendererParams.radius[j];
-        if (sq(p.x - center.x) + sq(p.y - center.y) <= sq(r))
-            shadePixel(j, rgba);
     }
     *(float4*)(&cuConstRendererParams.imageData[4*i]) = rgba;
 }
