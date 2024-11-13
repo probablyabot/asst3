@@ -696,13 +696,13 @@ CudaRenderer::setup() {
     cudaCheckError(cudaMalloc(&bboxes, wc * hc * sizeof(float4)));
     cudaCheckError(cudaMemcpyToSymbol(cuda_bboxes, &bboxes, sizeof(float4*)));
     getBboxes<<<(wc*hc+TPB-1)/TPB, TPB>>>();
-    frame = 0;
     dim3 block_dim(SQRT_TPB, SQRT_TPB);
     dim3 chunk_grid_dim((numCircles + SQRT_TPB - 1) / SQRT_TPB, (wc * hc + SQRT_TPB - 1) / SQRT_TPB);
     fillChunks<<<chunk_grid_dim, block_dim>>>();
     thrust::exclusive_scan_by_key(thrust::device, idxs, idxs + wc * hc * numCircles, chunks, prefix);
     getIdxs<<<chunk_grid_dim, block_dim>>>();
     cudaFree(bboxes);
+    frame = 0;
 }
 
 // allocOutputImage --
@@ -763,8 +763,8 @@ CudaRenderer::advanceAnimation() {
 
 void
 CudaRenderer::render() {
-    if (frame)
-        return;
+    // if (frame)
+    //     return;
     dim3 block_dim(SQRT_TPB, SQRT_TPB);
     dim3 pixel_grid_dim((image->width + SQRT_TPB - 1) / SQRT_TPB, (image->height + SQRT_TPB - 1) / SQRT_TPB);
     if (sceneName == SNOWFLAKES || sceneName == SNOWFLAKES_SINGLE_FRAME)
