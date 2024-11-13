@@ -21,8 +21,8 @@
 #define sq(x) (x) * (x)
 #define TPB 1024
 #define SQRT_TPB 32  // TODO: play with this
-#define CHUNK 64
 
+__constant__ int cuda_c;
 __constant__ int cuda_wc;
 __constant__ int cuda_hc;
 __constant__ float cuda_inv_w;
@@ -388,12 +388,12 @@ __global__ void fillChunks() {
         return;
     float3 p = *(float3*)(&cuConstRendererParams.position[3*circle]);
     float r = cuConstRendererParams.radius[circle];
-    int x = (chunk % cuda_wc) * CHUNK;
-    int y = (chunk / cuda_wc) * CHUNK;
+    int x = (chunk % cuda_wc) * cuda_c;
+    int y = (chunk / cuda_wc) * cuda_c;
     float min_x = cuda_inv_w * (static_cast<float>(x) + 0.5f);
     float min_y = cuda_inv_h * (static_cast<float>(y) + 0.5f);
-    float max_x = cuda_inv_w * (static_cast<float>(x + CHUNK - 1) + 0.5f);
-    float max_y = cuda_inv_h * (static_cast<float>(y + CHUNK - 1) + 0.5f);
+    float max_x = cuda_inv_w * (static_cast<float>(x + cuda_c - 1) + 0.5f);
+    float max_y = cuda_inv_h * (static_cast<float>(y + cuda_c - 1) + 0.5f);
     // TODO: write better versions of these (maybe use bbox instead of circle?) or think more abt geo
     if (circleInBoxConservative(p.x, p.y, r, min_x, max_x, max_y, min_y) &&
         circleInBox(p.x, p.y, r, min_x, max_x, max_y, min_y))
@@ -417,7 +417,7 @@ __global__ void renderPixelsSnowflakes() {
     int w = cuConstRendererParams.imageWidth;
     if (x >= w || y >= cuConstRendererParams.imageHeight)
         return;
-    int chunk = y / CHUNK * cuda_wc + x / CHUNK;
+    int chunk = y / cuda_c * cuda_wc + x / cuda_c;
     int i = y * w + x;
     float4 rgba = *(float4*)(&cuConstRendererParams.imageData[4*i]);
     float2 center = make_float2(cuda_inv_w * (static_cast<float>(x) + 0.5f),
@@ -455,7 +455,7 @@ __global__ void renderPixel() {
     int w = cuConstRendererParams.imageWidth;
     if (x >= w || y >= cuConstRendererParams.imageHeight)
         return;
-    int chunk = y / CHUNK * cuda_wc + x / CHUNK;
+    int chunk = y / cuda_c * cuda_wc + x / cuda_c;
     int i = y * w + x;
     float4 rgba = *(float4*)(&cuConstRendererParams.imageData[4*i]);
     float2 center = make_float2(cuda_inv_w * (static_cast<float>(x) + 0.5f),
@@ -503,6 +503,7 @@ CudaRenderer::CudaRenderer() {
     cudaDeviceRadius = NULL;
     cudaDeviceImageData = NULL;
 
+    c = 0;
     wc = 0;
     hc = 0;
     chunks = NULL;
@@ -646,8 +647,16 @@ CudaRenderer::setup() {
 
     cudaMemcpyToSymbol(cuConstColorRamp, lookupTable, sizeof(float) * 3 * COLOR_MAP_SIZE);
 
-    wc = (image->width + CHUNK - 1) / CHUNK;
-    hc = (image->height + CHUNK - 1) / CHUNK;
+    c = 8;
+    if (numCircles >= 2000000)
+        c = 64;
+    else if (numCircles >= 1000000)
+        c = 32;
+    else if (numCircles >= 100000)
+        c = 16;
+    wc = (image->width + c - 1) / c;
+    hc = (image->height + c - 1) / c;
+    cudaMemcpyToSymbol(cuda_c, &c, sizeof(int));
     cudaMemcpyToSymbol(cuda_wc, &wc, sizeof(int));
     cudaMemcpyToSymbol(cuda_hc, &hc, sizeof(int));
 

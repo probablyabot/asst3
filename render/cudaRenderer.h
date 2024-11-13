@@ -27,6 +27,7 @@ private:
     float* cudaDeviceRadius;
     float* cudaDeviceImageData;
 
+    int c;
     int wc;
     int hc;
     int* chunks;  // how to optimize this stuff
