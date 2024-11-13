@@ -23,24 +23,6 @@
 #define SQRT_TPB 32  // TODO: play with this
 #define CHUNK 64
 
-#define DEBUG
-
-#ifdef DEBUG
-#define cudaCheckError(ans) { cudaAssert((ans), __FILE__, __LINE__); }
-inline void cudaAssert(cudaError_t code, const char *file, int line, bool abort=true)
-{
-   if (code != cudaSuccess)
-   {
-      fprintf(stderr, "CUDA Error: %s at %s:%d\n",
-        cudaGetErrorString(code), file, line);
-      if (abort) exit(code);
-   }
-}
-#else
-#define cudaCheckError(ans) ans
-#endif
-
-// assumptions: chunk size and image dimensions are powers of 2
 __constant__ int cuda_wc;
 __constant__ int cuda_hc;
 __constant__ float cuda_inv_w;
@@ -672,22 +654,24 @@ CudaRenderer::setup() {
     cudaMemcpyToSymbol(cuda_inv_w, &inv_w, sizeof(float));
     cudaMemcpyToSymbol(cuda_inv_h, &inv_h, sizeof(float));
 
-    cudaCheckError(cudaMalloc(&chunks, wc * hc * numCircles * sizeof(int)));
-    cudaCheckError(cudaMemset(chunks, 0, wc * hc * numCircles * sizeof(int)));
-    cudaCheckError(cudaMalloc(&prefix, wc * hc * numCircles * sizeof(int)));
-    cudaCheckError(cudaMalloc(&idxs, wc * hc * numCircles * sizeof(int)));
+    cudaMalloc(&chunks, wc * hc * numCircles * sizeof(int));
+    cudaMemset(chunks, 0, wc * hc * numCircles * sizeof(int));
+    cudaMalloc(&prefix, wc * hc * numCircles * sizeof(int));
+    cudaMalloc(&idxs, wc * hc * numCircles * sizeof(int));
     for (int i = 0; i < wc * hc; i++) {
-        cudaCheckError(cudaMemset(idxs + i * numCircles, i & 1, numCircles * sizeof(int)));
+        cudaMemset(idxs + i * numCircles, i & 1, numCircles * sizeof(int));
     }
-    cudaCheckError(cudaMemcpyToSymbol(cuda_chunks, &chunks, sizeof(int*)));
-    cudaCheckError(cudaMemcpyToSymbol(cuda_prefix, &prefix, sizeof(int*)));
+    cudaMemcpyToSymbol(cuda_chunks, &chunks, sizeof(int*));
+    cudaMemcpyToSymbol(cuda_prefix, &prefix, sizeof(int*));
+    cudaMemcpyToSymbol(cuda_idxs, &idxs, sizeof(int*));
 
+    frame = 0;
     dim3 block_dim(SQRT_TPB, SQRT_TPB);
     dim3 chunk_grid_dim((numCircles + SQRT_TPB - 1) / SQRT_TPB, (wc * hc + SQRT_TPB - 1) / SQRT_TPB);
     fillChunks<<<chunk_grid_dim, block_dim>>>();
     thrust::exclusive_scan_by_key(thrust::device, idxs, idxs + wc * hc * numCircles, chunks, prefix);
     getIdxs<<<chunk_grid_dim, block_dim>>>();
-    frame = 0;
+    cudaDeviceSynchronize();
 }
 
 // allocOutputImage --
