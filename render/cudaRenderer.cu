@@ -414,7 +414,7 @@ __global__ void getIdxs() {
 __global__ void renderPixelsSnowflakes() {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
-    int w = cuConstRendererParams.imageWidth
+    int w = cuConstRendererParams.imageWidth;
     if (x >= w || y >= cuConstRendererParams.imageHeight)
         return;
     int chunk = y / CHUNK * cuda_wc + x / CHUNK;
@@ -452,7 +452,7 @@ __global__ void renderPixelsSnowflakes() {
 __global__ void renderPixel() {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
-    int w = cuConstRendererParams.imageWidth
+    int w = cuConstRendererParams.imageWidth;
     if (x >= w || y >= cuConstRendererParams.imageHeight)
         return;
     int chunk = y / CHUNK * cuda_wc + x / CHUNK;
