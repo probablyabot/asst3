@@ -48,7 +48,6 @@ __constant__ float cuda_inv_h;
 __constant__ int* cuda_chunks;
 __constant__ int* cuda_prefix;
 __constant__ int* cuda_idxs;
-__constant__ float4* cuda_bboxes;
 
 ////////////////////////////////////////////////////////////////////////////////////////
 // Putting all the cuda kernels here
@@ -407,10 +406,15 @@ __global__ void fillChunks() {
         return;
     float3 p = *(float3*)(&cuConstRendererParams.position[3*circle]);
     float r = cuConstRendererParams.radius[circle];
-    float4 bbox = cuda_bboxes[chunk];
+    int x = (chunk % cuda_wc) * CHUNK;
+    int y = (chunk / cuda_wc) * CHUNK;
+    float min_x = cuda_inv_w * (static_cast<float>(x) + 0.5f);
+    float min_y = cuda_inv_h * (static_cast<float>(y) + 0.5f);
+    float max_x = cuda_inv_w * (static_cast<float>(x + CHUNK - 1) + 0.5f);
+    float max_y = cuda_inv_h * (static_cast<float>(y + CHUNK - 1) + 0.5f);
     // TODO: write better versions of these (maybe use bbox instead of circle?) or think more abt geo
-    if (circleInBoxConservative(p.x, p.y, r, bbox.x, bbox.z, bbox.w, bbox.y) &&
-        circleInBox(p.x, p.y, r, bbox.x, bbox.z, bbox.w, bbox.y))
+    if (circleInBoxConservative(p.x, p.y, r, min_x, max_x, max_y, min_y) &&
+        circleInBox(p.x, p.y, r, min_x, max_x, max_y, min_y))
         cuda_chunks[chunk*nc+circle] = 1;
 }
 
@@ -495,19 +499,6 @@ __global__ void renderPixel() {
         }
     }
     *(float4*)(&cuConstRendererParams.imageData[4*i]) = rgba;
-}
-
-__global__ void getBboxes() {
-    int chunk = blockIdx.x * blockDim.x + threadIdx.x;
-    if (chunk >= cuda_wc * cuda_hc)
-        return;
-    int x = (chunk % cuda_wc) * CHUNK;
-    int y = (chunk / cuda_wc) * CHUNK;
-    float min_x = cuda_inv_w * (static_cast<float>(x) + 0.5f);
-    float min_y = cuda_inv_h * (static_cast<float>(y) + 0.5f);
-    float max_x = cuda_inv_w * (static_cast<float>(x + CHUNK - 1) + 0.5f);
-    float max_y = cuda_inv_h * (static_cast<float>(y + CHUNK - 1) + 0.5f);
-    cuda_bboxes[chunk] = make_float4(min_x, min_y, max_x, max_y);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -690,18 +681,12 @@ CudaRenderer::setup() {
     }
     cudaCheckError(cudaMemcpyToSymbol(cuda_chunks, &chunks, sizeof(int*)));
     cudaCheckError(cudaMemcpyToSymbol(cuda_prefix, &prefix, sizeof(int*)));
-    cudaCheckError(cudaMemcpyToSymbol(cuda_idxs, &idxs, sizeof(int*)));
 
-    float4* bboxes;
-    cudaCheckError(cudaMalloc(&bboxes, wc * hc * sizeof(float4)));
-    cudaCheckError(cudaMemcpyToSymbol(cuda_bboxes, &bboxes, sizeof(float4*)));
-    getBboxes<<<(wc*hc+TPB-1)/TPB, TPB>>>();
     dim3 block_dim(SQRT_TPB, SQRT_TPB);
     dim3 chunk_grid_dim((numCircles + SQRT_TPB - 1) / SQRT_TPB, (wc * hc + SQRT_TPB - 1) / SQRT_TPB);
     fillChunks<<<chunk_grid_dim, block_dim>>>();
     thrust::exclusive_scan_by_key(thrust::device, idxs, idxs + wc * hc * numCircles, chunks, prefix);
     getIdxs<<<chunk_grid_dim, block_dim>>>();
-    cudaFree(bboxes);
     frame = 0;
 }
 
