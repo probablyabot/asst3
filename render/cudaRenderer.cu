@@ -497,25 +497,6 @@ __global__ void renderPixel() {
     *(float4*)(&cuConstRendererParams.imageData[4*i]) = rgba;
 }
 
-__global__ void renderPixelNaive() {
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
-    int w = cuConstRendererParams.imageWidth;
-    if (x >= w || y >= cuConstRendererParams.imageHeight)
-        return;
-    int i = y * w + x;
-    float4 rgba = *(float4*)(&cuConstRendererParams.imageData[4*i]);
-    float2 center = make_float2(cuda_inv_w * (static_cast<float>(x) + 0.5f),
-                                cuda_inv_h * (static_cast<float>(y) + 0.5f));
-    for (int j = 0; j < cuConstRendererParams.numCircles; j++) {
-        float3 p = *(float3*)(&cuConstRendererParams.position[3*j]);
-        float r = cuConstRendererParams.radius[j];
-        if (sq(p.x - center.x) + sq(p.y - center.y) <= sq(r))
-            shadePixel(j, rgba);
-    }
-    *(float4*)(&cuConstRendererParams.imageData[4*i]) = rgba;
-}
-
 __global__ void getBboxes() {
     int chunk = blockIdx.x * blockDim.x + threadIdx.x;
     if (chunk >= cuda_wc * cuda_hc)
@@ -716,6 +697,12 @@ CudaRenderer::setup() {
     cudaCheckError(cudaMemcpyToSymbol(cuda_bboxes, &bboxes, sizeof(float4*)));
     getBboxes<<<(wc*hc+TPB-1)/TPB, TPB>>>();
     frame = 0;
+    dim3 block_dim(SQRT_TPB, SQRT_TPB);
+    dim3 chunk_grid_dim((numCircles + SQRT_TPB - 1) / SQRT_TPB, (wc * hc + SQRT_TPB - 1) / SQRT_TPB);
+    fillChunks<<<chunk_grid_dim, block_dim>>>();
+    thrust::exclusive_scan_by_key(thrust::device, idxs, idxs + wc * hc * numCircles, chunks, prefix);
+    getIdxs<<<chunk_grid_dim, block_dim>>>();
+    cudaFree(bboxes);
 }
 
 // allocOutputImage --
@@ -778,19 +765,11 @@ void
 CudaRenderer::render() {
     if (frame)
         return;
-    frame++;
     dim3 block_dim(SQRT_TPB, SQRT_TPB);
     dim3 pixel_grid_dim((image->width + SQRT_TPB - 1) / SQRT_TPB, (image->height + SQRT_TPB - 1) / SQRT_TPB);
-    if (numCircles < 4) {
-        renderPixelNaive<<<pixel_grid_dim, block_dim>>>();
-        return;
-    }
-    dim3 chunk_grid_dim((numCircles + SQRT_TPB - 1) / SQRT_TPB, (wc * hc + SQRT_TPB - 1) / SQRT_TPB);
-    fillChunks<<<chunk_grid_dim, block_dim>>>();
-    thrust::exclusive_scan_by_key(thrust::device, idxs, idxs + wc * hc * numCircles, chunks, prefix);
-    getIdxs<<<chunk_grid_dim, block_dim>>>();
     if (sceneName == SNOWFLAKES || sceneName == SNOWFLAKES_SINGLE_FRAME)
         renderPixelsSnowflakes<<<pixel_grid_dim, block_dim>>>();
     else
         renderPixel<<<pixel_grid_dim, block_dim>>>();
+    frame++;
 }
