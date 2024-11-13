@@ -552,7 +552,6 @@ CudaRenderer::CudaRenderer() {
     chunks = NULL;
     prefix = NULL;
     idxs = NULL;
-    bboxes = NULL;
     frame = 0;
 }
 
@@ -581,7 +580,6 @@ CudaRenderer::~CudaRenderer() {
         cudaFree(chunks);
         cudaFree(prefix);
         cudaFree(idxs);
-        cudaFree(bboxes);
     }
 }
 
@@ -713,6 +711,7 @@ CudaRenderer::setup() {
     cudaCheckError(cudaMemcpyToSymbol(cuda_prefix, &prefix, sizeof(int*)));
     cudaCheckError(cudaMemcpyToSymbol(cuda_idxs, &idxs, sizeof(int*)));
 
+    float4* bboxes;
     cudaCheckError(cudaMalloc(&bboxes, wc * hc * sizeof(float4)));
     cudaCheckError(cudaMemcpyToSymbol(cuda_bboxes, &bboxes, sizeof(float4*)));
     getBboxes<<<(wc*hc+TPB-1)/TPB, TPB>>>();
