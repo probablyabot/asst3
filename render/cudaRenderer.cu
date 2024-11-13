@@ -414,10 +414,11 @@ __global__ void getIdxs() {
 __global__ void renderPixelsSnowflakes() {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (x >= cuConstRendererParams.imageWidth || y >= cuConstRendererParams.imageHeight)
+    int w = cuConstRendererParams.imageWidth
+    if (x >= w || y >= cuConstRendererParams.imageHeight)
         return;
     int chunk = y / CHUNK * cuda_wc + x / CHUNK;
-    int i = y * cuConstRendererParams.imageWidth + x;
+    int i = y * w + x;
     float4 rgba = *(float4*)(&cuConstRendererParams.imageData[4*i]);
     float2 center = make_float2(cuda_inv_w * (static_cast<float>(x) + 0.5f),
                                 cuda_inv_h * (static_cast<float>(y) + 0.5f));
@@ -451,10 +452,11 @@ __global__ void renderPixelsSnowflakes() {
 __global__ void renderPixel() {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (x >= cuConstRendererParams.imageWidth || y >= cuConstRendererParams.imageHeight)
+    int w = cuConstRendererParams.imageWidth
+    if (x >= w || y >= cuConstRendererParams.imageHeight)
         return;
     int chunk = y / CHUNK * cuda_wc + x / CHUNK;
-    int i = y * cuConstRendererParams.imageWidth + x;
+    int i = y * w + x;
     float4 rgba = *(float4*)(&cuConstRendererParams.imageData[4*i]);
     float2 center = make_float2(cuda_inv_w * (static_cast<float>(x) + 0.5f),
                                 cuda_inv_h * (static_cast<float>(y) + 0.5f));
