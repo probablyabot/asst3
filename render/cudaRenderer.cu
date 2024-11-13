@@ -763,8 +763,8 @@ CudaRenderer::advanceAnimation() {
 
 void
 CudaRenderer::render() {
-    // if (frame)
-    //     return;
+    if (frame)
+        return;
     dim3 block_dim(SQRT_TPB, SQRT_TPB);
     dim3 pixel_grid_dim((image->width + SQRT_TPB - 1) / SQRT_TPB, (image->height + SQRT_TPB - 1) / SQRT_TPB);
     if (sceneName == SNOWFLAKES || sceneName == SNOWFLAKES_SINGLE_FRAME)
