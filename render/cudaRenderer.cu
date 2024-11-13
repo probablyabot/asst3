@@ -475,29 +475,24 @@ __global__ void renderPixel() {
     int nc = cuConstRendererParams.numCircles;
     int chunk_circles = cuda_prefix[chunk*nc+nc-1] + cuda_chunks[chunk*nc+nc-1];
     int k = 3 - (chunk * nc + 3) % 4; // address alignment
-    int j = 0;
-    for (; j < k; j++) {
-        int circle = cuda_idxs[chunk*nc+j];
-        float3 p = *(float3*)(&cuConstRendererParams.position[3*circle]);
-        float r = cuConstRendererParams.radius[circle];
-        if (sq(p.x - center.x) + sq(p.y - center.y) <= sq(r))
-            shadePixel(circle, rgba);
-    }
-    for (; j + 4 <= chunk_circles; j += 4) {
-        int4 circles = *(int4*)(&cuda_idxs[chunk*nc+j]);
-        for (int circle : {circles.x, circles.y, circles.z, circles.w}) {
+    for (int j = 0; j < chunk_circles; j++) {
+        if (k <= j && j <= chunk_circles - 4) {
+            int4 circles = *(int4*)(&cuda_idxs[chunk*nc+j]);
+            for (int circle : {circles.x, circles.y, circles.z, circles.w}) {
+                float3 p = *(float3*)(&cuConstRendererParams.position[3*circle]);
+                float r = cuConstRendererParams.radius[circle];
+                if (sq(p.x - center.x) + sq(p.y - center.y) <= sq(r))
+                    shadePixel(circle, rgba);
+            }
+            j += 3;
+        }
+        else {
+            int circle = cuda_idxs[chunk*nc+j];
             float3 p = *(float3*)(&cuConstRendererParams.position[3*circle]);
             float r = cuConstRendererParams.radius[circle];
             if (sq(p.x - center.x) + sq(p.y - center.y) <= sq(r))
                 shadePixel(circle, rgba);
         }
-    }
-    for (; j < chunk_circles; j++) {
-        int circle = cuda_idxs[chunk*nc+j];
-        float3 p = *(float3*)(&cuConstRendererParams.position[3*circle]);
-        float r = cuConstRendererParams.radius[circle];
-        if (sq(p.x - center.x) + sq(p.y - center.y) <= sq(r))
-            shadePixel(circle, rgba);
     }
     *(float4*)(&cuConstRendererParams.imageData[4*i]) = rgba;
 }
@@ -782,8 +777,8 @@ CudaRenderer::advanceAnimation() {
 
 void
 CudaRenderer::render() {
-    // if (frame)
-    //     return;
+    if (frame)
+        return;
     frame++;
     dim3 block_dim(SQRT_TPB, SQRT_TPB);
     dim3 pixel_grid_dim((image->width + SQRT_TPB - 1) / SQRT_TPB, (image->height + SQRT_TPB - 1) / SQRT_TPB);
