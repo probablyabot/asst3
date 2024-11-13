@@ -32,6 +32,7 @@ private:
     int* chunks;  // how to optimize this stuff
     int* prefix;
     int* idxs;
+    float4* bboxes;
     int frame;
 
 public:

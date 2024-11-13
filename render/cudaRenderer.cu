@@ -551,6 +551,7 @@ CudaRenderer::CudaRenderer() {
     chunks = NULL;
     prefix = NULL;
     idxs = NULL;
+    bboxes = NULL;
     frame = 0;
 }
 
@@ -579,6 +580,7 @@ CudaRenderer::~CudaRenderer() {
         cudaFree(chunks);
         cudaFree(prefix);
         cudaFree(idxs);
+        cudaFree(bboxes);
     }
 }
 
@@ -706,11 +708,15 @@ CudaRenderer::setup() {
     for (int i = 0; i < wc * hc; i++) {
         cudaCheckError(cudaMemset(idxs + i * numCircles, i & 1, numCircles * sizeof(int)));
     }
-    float4* bboxes;
     cudaCheckError(cudaMalloc(&bboxes, wc * hc * sizeof(float4)));
     cudaCheckError(cudaMemcpyToSymbol(cuda_bboxes, &bboxes, sizeof(float4*)));
     getBboxes<<<(wc*hc+TPB-1)/TPB, TPB>>>();
     frame = 0;
+    dim3 block_dim(SQRT_TPB, SQRT_TPB);
+    dim3 chunk_grid_dim((numCircles + SQRT_TPB - 1) / SQRT_TPB, (wc * hc + SQRT_TPB - 1) / SQRT_TPB);
+    fillChunks<<<chunk_grid_dim, block_dim>>>(chunks);
+    thrust::exclusive_scan_by_key(thrust::device, idxs, idxs + wc * hc * numCircles, chunks, prefix);
+    getIdxs<<<chunk_grid_dim, block_dim>>>(chunks, prefix, idxs);
 }
 
 // allocOutputImage --
@@ -771,58 +777,13 @@ CudaRenderer::advanceAnimation() {
 
 void
 CudaRenderer::render() {
-    if (frame)
-        return;
+    // if (frame)
+    //     return;
     frame++;
     dim3 block_dim(SQRT_TPB, SQRT_TPB);
-    dim3 chunk_grid_dim((numCircles + SQRT_TPB - 1) / SQRT_TPB, (wc * hc + SQRT_TPB - 1) / SQRT_TPB);
     dim3 pixel_grid_dim((image->width + SQRT_TPB - 1) / SQRT_TPB, (image->height + SQRT_TPB - 1) / SQRT_TPB);
-    // TODO: get rid of checkError
-    if (numCircles < 4) {
-        renderPixelNaive<<<pixel_grid_dim, block_dim>>>();
-        return;
-    }
-
-    // double t0 = CycleTimer::currentSeconds();
-    fillChunks<<<chunk_grid_dim, block_dim>>>(chunks);
-    // cudaCheckError(cudaDeviceSynchronize());
-    // double t1 = CycleTimer::currentSeconds();
-    // printf("%.3f ms in fillChunks\n", 1000.f*(t1-t0));
-
-    // TODO: rename chunks to bits
-    // TODO: smarter way to call thrust besides scan by key?
-    thrust::exclusive_scan_by_key(thrust::device, idxs, idxs + wc * hc * numCircles, chunks, prefix);
-    // cudaCheckError(cudaDeviceSynchronize());
-    // double t2 = CycleTimer::currentSeconds();
-    // printf("%.3f ms in thrust\n", 1000.f*(t2-t1));
-
-    getIdxs<<<chunk_grid_dim, block_dim>>>(chunks, prefix, idxs);
-    // cudaCheckError(cudaDeviceSynchronize());
-    // double t3 = CycleTimer::currentSeconds();
-    // printf("%.3f ms in getIdxs\n", 1000.f*(t3-t2));
-    // cudaDeviceSynchronize();
-    // int* debug = new int[wc*hc*numCircles];
-    // cudaMemcpy(debug, idxs, wc*hc*numCircles*sizeof(int), cudaMemcpyDeviceToHost);
-    // for (int i = 0; i < wc * hc; i += wc) {
-    //     printf("%i: ", i);
-    //     for (int j = 0; j < 10; j++) {
-    //         if (debug[i*numCircles+j] == -1)
-    //             break;
-    //         printf("%i ", debug[i*numCircles+j]);
-    //     }
-    //     printf("\n");
-    // }
-    // printf("end debug\n");
-    // free(debug);
-    
-    if (sceneName == SNOWFLAKES || sceneName == SNOWFLAKES_SINGLE_FRAME) {
+    if (sceneName == SNOWFLAKES || sceneName == SNOWFLAKES_SINGLE_FRAME)
         renderPixelsSnowflakes<<<pixel_grid_dim, block_dim>>>(idxs, chunks, prefix);
-    }
-    else {
-        // TODO: maybe launch 1 per chunk? or 1 per 2x2 group of pixels?
+    else
         renderPixel<<<pixel_grid_dim, block_dim>>>(idxs, chunks, prefix);
-    }
-    // cudaCheckError(cudaDeviceSynchronize());
-    // double t4 = CycleTimer::currentSeconds();
-    // printf("%.3f ms in renderPixel\n", 1000.f*(t4-t3));
 }
